@@ -3,7 +3,7 @@ name: apm
 title: Elastic APM
 version: generated
 license: basic
-description: Ingest APM data
+description: Collect distributed traces and transactions from your applications with Elastic Agent.
 type: integration
 categories: ["elastic_stack", "monitoring"]
 release: ga
