@@ -34,15 +34,34 @@ func Timeout() grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
 		req interface{},
-		info *grpc.UnaryServerInfo,
+		_ *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (interface{}, error) {
 		resp, err := handler(ctx, req)
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			if s, ok := status.FromError(err); !ok || s.Code() == codes.OK {
-				err = status.Error(codes.DeadlineExceeded, "request timed out")
-			}
-		}
-		return resp, err
+		return resp, handleTimeoutError(err)
 	}
+}
+
+// TimeoutStream returns a grpc.UnaryServerInterceptor that intercepts
+// context.Canceled and context.DeadlineExceeded errors, and
+// updates the response to indicate that the request timed out.
+// This could be caused by either a client timeout or server timeout.
+func TimeoutStream() grpc.StreamServerInterceptor {
+	return func(
+		srv interface{},
+		ss grpc.ServerStream,
+		_ *grpc.StreamServerInfo,
+		handler grpc.StreamHandler,
+	) error {
+		return handleTimeoutError(handler(srv, ss))
+	}
+}
+
+func handleTimeoutError(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if s, ok := status.FromError(err); !ok || s.Code() == codes.OK {
+			return status.Error(codes.DeadlineExceeded, "request timed out")
+		}
+	}
+	return nil
 }

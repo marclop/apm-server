@@ -33,6 +33,9 @@ import (
 
 	_ "github.com/terraform-docs/terraform-docs" // go.mod/go.sum
 
-	_ "github.com/elastic/elastic-package" // go.mod/go.sum
-	_ "github.com/elastic/go-licenser"     // go.mod/go.sum
+	_ "github.com/elastic/elastic-package"                          // go.mod/go.sum
+	_ "github.com/elastic/go-licenser"                              // go.mod/go.sum
+	_ "github.com/planetscale/vtprotobuf/cmd/protoc-gen-go-vtproto" // go.mod/go.sum
+	_ "google.golang.org/grpc/cmd/protoc-gen-go-grpc"               // go.mod/go.sum
+	_ "google.golang.org/protobuf/cmd/protoc-gen-go"                // go.mod/go.sum
 )

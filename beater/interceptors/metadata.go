@@ -63,6 +63,41 @@ func ClientMetadata() grpc.UnaryServerInterceptor {
 	}
 }
 
+// ClientMetadataStream returns an interceptor that intercepts unary gRPC requests,
+// extracts metadata relating to the gRPC client, and adds it to the context.
+//
+// Metadata can be extracted from context using ClientMetadataFromContext.
+func ClientMetadataStream() grpc.StreamServerInterceptor {
+	return func(
+		srv interface{},
+		ss grpc.ServerStream,
+		_ *grpc.StreamServerInfo,
+		handler grpc.StreamHandler,
+	) error {
+		var values ClientMetadataValues
+		ctx := ss.Context()
+		if p, ok := peer.FromContext(ctx); ok {
+			values.SourceAddr = p.Addr
+			if addr, ok := p.Addr.(*net.TCPAddr); ok {
+				values.ClientIP = addr.IP
+			}
+		}
+		if md, ok := metadata.FromIncomingContext(ctx); ok {
+			if ua := md["user-agent"]; len(ua) > 0 {
+				values.UserAgent = ua[0]
+			}
+			// Account for `forwarded`, `x-real-ip`, `x-forwarded-for` headers
+			if ip, port := netutil.ClientAddrFromHeaders(http.Header(md)); ip != nil {
+				values.SourceNATIP = values.ClientIP
+				values.ClientIP = ip
+				values.SourceAddr = &net.TCPAddr{IP: ip, Port: int(port)}
+			}
+		}
+		ctx = context.WithValue(ctx, clientMetadataKey{}, values)
+		return handler(srv, wrapStream{ctx: ctx, ServerStream: ss})
+	}
+}
+
 type clientMetadataKey struct{}
 
 // ContextWithClientMetadata returns a copy of ctx with values.

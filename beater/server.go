@@ -40,10 +40,12 @@ import (
 	"github.com/elastic/apm-server/beater/interceptors"
 	"github.com/elastic/apm-server/beater/jaeger"
 	"github.com/elastic/apm-server/beater/otlp"
+	"github.com/elastic/apm-server/beater/protointake"
 	"github.com/elastic/apm-server/beater/ratelimit"
 	"github.com/elastic/apm-server/elasticsearch"
 	"github.com/elastic/apm-server/model"
 	"github.com/elastic/apm-server/model/modelprocessor"
+	v2 "github.com/elastic/apm-server/modelproto/v2"
 	"github.com/elastic/apm-server/sourcemap"
 )
 
@@ -212,6 +214,15 @@ func newGRPCServer(
 			authInterceptor,
 			interceptors.AnonymousRateLimit(ratelimitStore),
 		),
+		grpc.ChainStreamInterceptor(
+			apmgrpc.NewStreamServerInterceptor(apmgrpc.WithRecovery(), apmgrpc.WithTracer(tracer)),
+			interceptors.ClientMetadataStream(),
+			interceptors.LoggingStream(logger),
+			interceptors.MetricsStream(logger, v2.GRPCRegistryMonitoringMaps),
+			interceptors.TimeoutStream(),
+			interceptors.AuthStream(protointake.MethodAuthenticators(authenticator)),
+			interceptors.AnonymousRateLimitStream(ratelimitStore),
+		),
 	)
 
 	if cfg.AugmentEnabled {
@@ -226,6 +237,7 @@ func newGRPCServer(
 	if err := otlp.RegisterGRPCServices(srv, batchProcessor); err != nil {
 		return nil, err
 	}
+	v2.RegisterIntakeServiceServer(srv, protointake.NewServer(batchProcessor))
 	return srv, nil
 }
 

@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package v2;
+
+import "modelproto/v2/model.proto";
+// import "google/protobuf/struct.proto";
+// import "google/protobuf/timestamp.proto";
+
+option go_package = "modelproto/v2";
+option optimize_for = SPEED;
+
+service IntakeService {
+  rpc IntakeEvents(stream Event) returns (stream IntakeResponse);
+}
+
+message IntakeResponse {
+  repeated IntakeError errors = 1;
+}
+
+message IntakeError {
+  string message = 1;
+}

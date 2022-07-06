@@ -16,6 +16,13 @@ STATICCHECK=$(GOOSBUILD)/staticcheck
 ELASTICPACKAGE=$(GOOSBUILD)/elastic-package
 TERRAFORMDOCS=$(GOOSBUILD)/terraform-docs
 GOBENCH=$(GOOSBUILD)/gobench
+PROTOC=$(GOOSBUILD)/protoc/bin/protoc
+PROTOC_GEN_GO_VTPROTO=$(GOOSBUILD)/protoc-gen-go-vtproto
+PROTOC_GEN_GO=$(GOOSBUILD)/protoc-gen-go
+PROTOC_GEN_GO_GRPC=$(GOOSBUILD)/protoc-gen-go-grpc
+PROTOC_GEN_VALIDATE=$(GOOSBUILD)/protoc-gen-validate
+PROTOC_GEN_VALIDATE_MOD=github.com/envoyproxy/protoc-gen-validate
+PROTOC_GEN_VALIDATE_PATH=$(shell $(GO) env GOPATH)/src/$(PROTOC_GEN_VALIDATE_MOD)
 APM_SERVER_VERSION=$(shell grep defaultBeatVersion $(GITROOT)/cmd/version.go | cut -d'=' -f2 | tr -d '" ')
 
 ##############################################################################
@@ -55,6 +62,24 @@ $(TERRAFORMDOCS): $(GITROOT)/tools/go.mod
 
 $(GOBENCH): $(GITROOT)/tools/go.mod
 	$(GO) build -o $@ -modfile=$< github.com/elastic/gobench
+
+$(PROTOC):
+	@./tools/protoc-install.sh
+
+$(PROTOC_GEN_GO_VTPROTO): $(GITROOT)/tools/go.mod
+	$(GO) build -o $@ -modfile=$< github.com/planetscale/vtprotobuf/cmd/protoc-gen-go-vtproto
+
+$(PROTOC_GEN_GO): $(GITROOT)/tools/go.mod
+	$(GO) build -o $@ -modfile=$< google.golang.org/protobuf/cmd/protoc-gen-go
+
+$(PROTOC_GEN_GO_GRPC): $(GITROOT)/tools/go.mod
+	$(GO) build -o $@ -modfile=$< google.golang.org/grpc/cmd/protoc-gen-go-grpc
+
+$(PROTOC_GEN_VALIDATE): $(GITROOT)/tools/go.mod
+	$(GO) build -o $@ -modfile=$< $(PROTOC_GEN_VALIDATE_MOD)
+
+$(PROTOC_GEN_VALIDATE_PATH): $(GITROOT)/tools/go.mod
+	@GO111MODULE=off $(GO) get -d $(PROTOC_GEN_VALIDATE_MOD)
 
 .PHONY: $(APPROVALS)
 $(APPROVALS):

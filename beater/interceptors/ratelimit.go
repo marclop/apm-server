@@ -35,31 +35,61 @@ func AnonymousRateLimit(store *ratelimit.Store) grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
 		req interface{},
-		info *grpc.UnaryServerInfo,
+		_ *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (interface{}, error) {
-		details, ok := AuthenticationDetailsFromContext(ctx)
-		if !ok {
-			return nil, errors.New("authentication details not found in context")
-		}
-		if details.Method == "" {
-			clientMetadata, ok := ClientMetadataFromContext(ctx)
-			if !ok {
-				return nil, errors.New("client metadata not found in context")
-			}
-			limiter := store.ForIP(clientMetadata.ClientIP)
-			if !limiter.Allow() {
-				return nil, status.Error(
-					codes.ResourceExhausted,
-					ratelimit.ErrRateLimitExceeded.Error(),
-				)
-			}
-			ctx = ratelimit.ContextWithLimiter(ctx, limiter)
+		ctx, err := rateLimitContext(ctx, store)
+		if err != nil {
+			return nil, err
 		}
 		result, err := handler(ctx, req)
-		if errors.Is(err, ratelimit.ErrRateLimitExceeded) {
-			err = status.Error(codes.ResourceExhausted, err.Error())
-		}
-		return result, err
+		return result, handleRateLimitError(err)
 	}
+}
+
+// AnonymousRateLimitStream returns a grpc.StreamServerInterceptor that adds a rate limiter
+// to the context of anonymous requests. RateLimit must be wrapped by the ClientMetadata
+// and Authorization interceptor, as it requires the client's IP address and authorization.
+func AnonymousRateLimitStream(store *ratelimit.Store) grpc.StreamServerInterceptor {
+	return func(
+		srv interface{},
+		ss grpc.ServerStream,
+		_ *grpc.StreamServerInfo,
+		handler grpc.StreamHandler,
+	) error {
+		ctx, err := rateLimitContext(ss.Context(), store)
+		if err != nil {
+			return err
+		}
+		return handleRateLimitError(handler(srv, wrapStream{ctx: ctx, ServerStream: ss}))
+	}
+}
+
+func rateLimitContext(ctx context.Context, store *ratelimit.Store) (context.Context, error) {
+	details, ok := AuthenticationDetailsFromContext(ctx)
+	if !ok {
+		return ctx, errors.New("authentication details not found in context")
+	}
+	if details.Method == "" {
+		clientMetadata, ok := ClientMetadataFromContext(ctx)
+		if !ok {
+			return ctx, errors.New("client metadata not found in context")
+		}
+		limiter := store.ForIP(clientMetadata.ClientIP)
+		if !limiter.Allow() {
+			return ctx, status.Error(
+				codes.ResourceExhausted,
+				ratelimit.ErrRateLimitExceeded.Error(),
+			)
+		}
+		ctx = ratelimit.ContextWithLimiter(ctx, limiter)
+	}
+	return ctx, nil
+}
+
+func handleRateLimitError(err error) error {
+	if errors.Is(err, ratelimit.ErrRateLimitExceeded) {
+		return status.Error(codes.ResourceExhausted, err.Error())
+	}
+	return nil
 }

@@ -40,11 +40,13 @@ import (
 	"github.com/jaegertracing/jaeger/proto-gen/api_v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/elastic/beats/v7/libbeat/beat"
 	"github.com/elastic/beats/v7/libbeat/common/reload"
@@ -62,6 +64,7 @@ import (
 	"github.com/elastic/apm-server/beater/api"
 	"github.com/elastic/apm-server/beater/config"
 	"github.com/elastic/apm-server/elasticsearch"
+	v2 "github.com/elastic/apm-server/modelproto/v2"
 )
 
 type m map[string]interface{}
@@ -447,6 +450,220 @@ func TestServerOTLPGRPC(t *testing.T) {
 	ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs("Authorization", "Bearer abc123"))
 	err = invokeExport(ctx, conn)
 	assert.NoError(t, err)
+}
+
+func TestServerIntakeGRPC(t *testing.T) {
+	newIntakeGRPC := func(t *testing.T, docs chan []byte) (context.Context, v2.IntakeService_IntakeEventsClient) {
+		ctx, conn := newGRPCConn(t, docs)
+		client := v2.NewIntakeServiceClient(conn)
+		ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs("Authorization", "Bearer abc123"))
+		rpc, err := client.IntakeEvents(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, rpc)
+		return ctx, rpc
+	}
+	t.Run("less than batch size", func(t *testing.T) {
+		docs := make(chan []byte, 3)
+		ctx, rpc := newIntakeGRPC(t, docs)
+		err := rpc.Send(&v2.Event{Metadata: &v2.Event_Metadata{
+			Service: &v2.Event_Metadata_Service{
+				Name: "my-service",
+				Agent: &v2.Agent{
+					Name:    "apm-agent-go",
+					Version: "2.0.0",
+				},
+			},
+			Cloud: &v2.Event_Metadata_Cloud{Region: "test-region"},
+		}})
+		assert.NoError(t, err)
+		var sampleRate float32 = 1
+		err = rpc.Send(&v2.Event{Transaction: &v2.Event_Transaction{
+			Id:         "1234",
+			Name:       "txName",
+			Type:       "txType",
+			SampleRate: &sampleRate,
+			TraceId:    "1234",
+			SpanCount:  &v2.Event_Transaction_SpanCount{Started: 1},
+		}})
+		assert.NoError(t, err)
+		err = rpc.Send(&v2.Event{Span: &v2.Event_Span{
+			Name:    "span",
+			Type:    "app.custom",
+			Id:      "12345",
+			TraceId: "1234",
+		}})
+		assert.NoError(t, err)
+		err = rpc.Send(&v2.Event{Error: &v2.Event_Error{
+			Id:            "123456",
+			ParentId:      "12345",
+			Culprit:       "NPE",
+			TraceId:       "1234",
+			Timestamp:     timestamppb.Now(),
+			TransactionId: "1234",
+			Transaction: &v2.Event_Error_Transaction{
+				Sampled: true,
+				Name:    "txName",
+				Type:    "txType",
+			},
+		}})
+		assert.NoError(t, err)
+		assert.NoError(t, rpc.CloseSend())
+
+		received := make(map[string]uint)
+		for i := 0; i < cap(docs); i++ {
+			select {
+			case <-ctx.Done():
+				t.Error("timed out while waiting for documents go be received")
+				return
+			case doc := <-docs:
+				received[gjson.GetBytes(doc, "processor.event").Str]++
+			}
+		}
+		assert.Equal(t, map[string]uint{
+			"transaction": 1,
+			"span":        1,
+			"error":       1,
+		}, received)
+	})
+	t.Run("more than batch size", func(t *testing.T) {
+		docs := make(chan []byte, 20)
+		ctx, rpc := newIntakeGRPC(t, docs)
+		err := rpc.Send(&v2.Event{Metadata: &v2.Event_Metadata{
+			Service: &v2.Event_Metadata_Service{
+				Name: "my-service",
+				Agent: &v2.Agent{
+					Name:    "apm-agent-go",
+					Version: "2.0.0",
+				},
+			},
+			Cloud: &v2.Event_Metadata_Cloud{Region: "test-region"},
+		}})
+		assert.NoError(t, err)
+		var sampleRate float32 = 1
+		err = rpc.Send(&v2.Event{Error: &v2.Event_Error{
+			Id:            "123456",
+			ParentId:      "12345",
+			Culprit:       "NPE",
+			TraceId:       "1234",
+			Timestamp:     timestamppb.Now(),
+			TransactionId: "1234",
+			Transaction: &v2.Event_Error_Transaction{
+				Sampled: true,
+				Name:    "txName",
+				Type:    "txType",
+			},
+		}})
+		err = rpc.Send(&v2.Event{Transaction: &v2.Event_Transaction{
+			Id:         "1234",
+			Name:       "txName",
+			Type:       "txType",
+			SampleRate: &sampleRate,
+			TraceId:    "1234",
+			SpanCount:  &v2.Event_Transaction_SpanCount{Started: 18},
+		}})
+		assert.NoError(t, err)
+		for i := 0; i < 18; i++ {
+			err = rpc.Send(&v2.Event{Span: &v2.Event_Span{
+				Name:    "span",
+				Type:    "app.custom",
+				Id:      "12345" + fmt.Sprint(i),
+				TraceId: "1234",
+			}})
+			assert.NoError(t, err)
+		}
+
+		assert.NoError(t, err)
+		assert.NoError(t, rpc.CloseSend())
+
+		received := make(map[string]uint)
+		for i := 0; i < cap(docs); i++ {
+			select {
+			case <-ctx.Done():
+				t.Error("timed out while waiting for documents go be received")
+				return
+			case doc := <-docs:
+				received[gjson.GetBytes(doc, "processor.event").Str]++
+			}
+		}
+		assert.Equal(t, map[string]uint{
+			"transaction": 1,
+			"error":       1,
+			"span":        18,
+		}, received)
+	})
+}
+
+func TestServerIntakeGRPCTwoClients(t *testing.T) {
+	docs := make(chan []byte, 20)
+	ctx, conn := newGRPCConn(t, docs)
+	client := v2.NewIntakeServiceClient(conn)
+	rpc, err := client.IntakeEvents(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, rpc)
+
+	sendEvents := func(rpc v2.IntakeService_IntakeEventsClient, name string, count int) {
+		err := rpc.Send(&v2.Event{Metadata: &v2.Event_Metadata{
+			Service: &v2.Event_Metadata_Service{
+				Name: "my-service",
+				Agent: &v2.Agent{
+					Name:    name,
+					Version: "2.0.0",
+				},
+			},
+			Cloud: &v2.Event_Metadata_Cloud{Region: "test-region"},
+		}})
+		assert.NoError(t, err)
+		for i := 0; i < count; i++ {
+			err = rpc.Send(&v2.Event{Span: &v2.Event_Span{
+				Name:    "span",
+				Type:    "app.custom",
+				Id:      "12345" + fmt.Sprint(i),
+				TraceId: "1234",
+			}})
+			assert.NoError(t, err)
+		}
+		assert.NoError(t, err)
+	}
+	sendEvents(rpc, "apm-agent-go", 10)
+	rpc.CloseSend()
+	rpc, err = client.IntakeEvents(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, rpc)
+	sendEvents(rpc, "apm-agent-java", 10)
+	rpc.CloseSend()
+
+	received := make(map[string]uint)
+	for i := 0; i < cap(docs); i++ {
+		select {
+		case <-ctx.Done():
+			t.Error("timed out while waiting for documents go be received")
+			return
+		case doc := <-docs:
+			received[gjson.GetBytes(doc, "agent.name").Str]++
+		}
+	}
+	assert.Equal(t, map[string]uint{
+		"apm-agent-java": 10,
+		"apm-agent-go":   10,
+	}, received)
+}
+
+func newGRPCConn(t *testing.T, docs chan []byte) (context.Context, *grpc.ClientConn) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	t.Cleanup(cancel)
+	ucfg, err := agentconfig.NewConfigFrom(m{"auth.secret_token": "abc123"})
+	require.NoError(t, err)
+	server, err := setupServer(t, ucfg, nil, docs)
+	require.NoError(t, err)
+	t.Cleanup(server.Stop)
+
+	baseURL, err := url.Parse(server.baseURL)
+	require.NoError(t, err)
+	conn, err := grpc.Dial(baseURL.Host, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { conn.Close() })
+	ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs("Authorization", "Bearer abc123"))
+	return ctx, conn
 }
 
 func TestServerConfigReload(t *testing.T) {

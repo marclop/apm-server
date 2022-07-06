@@ -66,3 +66,44 @@ func Logging(logger *logp.Logger) grpc.UnaryServerInterceptor {
 		return resp, nil
 	}
 }
+
+// LoggingStream intercepts a gRPC request and provides logging processing. The
+// returned function implements grpc.StreamServerInterceptor.
+//
+// Logging should be added after ClientMetadata to include `source.address`
+// in log records.
+func LoggingStream(logger *logp.Logger) grpc.StreamServerInterceptor {
+	return func(
+		srv interface{},
+		ss grpc.ServerStream,
+		info *grpc.StreamServerInfo,
+		handler grpc.StreamHandler,
+	) error {
+		// Shadow the logger param to ensure we don't update the
+		// closure variable, and interfere with logging of other
+		// requests.
+		logger := logger
+
+		start := time.Now()
+		ctx := ss.Context()
+		if metadata, ok := ClientMetadataFromContext(ctx); ok {
+			if metadata.SourceAddr != nil {
+				logger = logger.With("source.address", metadata.SourceAddr.String())
+			}
+		}
+
+		err := handler(srv, wrapStream{ctx: ctx, ServerStream: ss})
+		res, _ := status.FromError(err)
+		logger = logger.With(
+			"grpc.request.method", info.FullMethod,
+			"event.duration", time.Since(start),
+			"grpc.response.status_code", res.Code(),
+		)
+		if err != nil {
+			logger.With("error.message", res.Message()).Error(logp.Error(err))
+			return err
+		}
+		logger.Info("request accepted")
+		return nil
+	}
+}

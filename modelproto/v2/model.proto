@@ -1,0 +1,877 @@
+syntax = "proto3";
+
+package v2;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "validate/validate.proto";
+
+option go_package = "modelproto/v2";
+option optimize_for = SPEED;
+
+message Event {
+  message Metadata {
+    message Cloud {
+      // Account where the monitored service is running.
+      IDName account = 1;
+      // AZ where the monitored service is running, e.g. us-east-1a
+      string availability_zone = 2 [(validate.rules).string.max_len = 1024];
+      // Instance on which the monitored service is running.
+      IDName instance = 3;
+      // Machine on which the monitored service is running.
+      message Machine {
+        string type = 1 [(validate.rules).string.max_len = 1024];
+      }
+      Machine machine = 4;
+      // Project in which the monitored service is running.
+      IDName project = 5;
+      // Provider that is used, e.g. aws, azure, gcp, digitalocean.
+      string provider = 6 [(validate.rules).string.max_len = 1024];
+      // Region where the monitored service is running, e.g. us-east-1
+      string region = 7 [(validate.rules).string.max_len = 1024];
+      // Service that is monitored on cloud
+      Name service = 8;
+    }
+    Cloud cloud = 1;
+    message Process {
+      // Argv holds the command line arguments used to start this process.
+      repeated string argv = 1;
+      // PID holds the process ID of the service.
+      int32 pid = 2;
+      // Ppid holds the parent process ID of the service.
+      int32 ppid = 3;
+      // Title is the process title. It can be the same as process name.
+      string title = 4 [(validate.rules).string.max_len = 1024];
+    }
+    Process process = 2;
+    message Service {
+      // Agent holds information about the APM agent capturing the event
+      Agent agent = 1;
+      // Environment in which the monitored service is running,
+      // e.g. `production` or `staging`.
+      string environment = 2 [(validate.rules).string.max_len = 1024];
+      // Framework holds information about the framework used in the
+      // monitored service.
+      NameVersion framework = 3;
+      // ID holds a unique identifier for the running service.
+      string id = 4;
+      // Language holds information about the programming language of the
+      // monitored service.
+      NameVersion language = 5;
+      // Name of the monitored service.
+      string name = 6 [(validate.rules).string.max_len = 1024, (validate.rules).string.pattern = "^[a-zA-Z0-9 _-]+$"];
+      // Node must be a unique meaningful name of the service node.
+      Name node = 7;
+      // Runtime holds information about the language runtime running the
+      // monitored service
+      NameVersion runtime = 8;
+      // Version of the monitored service.
+      string version = 9;
+    }
+    Service service = 3 [(validate.rules).message.required = true];
+    message System {
+      // Architecture of the system the monitored service is running on.
+      string architecture = 1 [(validate.rules).string.max_len = 1024];
+      // ConfiguredHostname is the configured name of the host the monitored
+      // service is running on. It should only be sent when configured by the
+      // user. If given, it is used as the event's hostname.
+      string configured_host = 2 [(validate.rules).string.max_len = 1024];
+      // Container holds the system's container ID if available.
+      message Container {
+        string id = 1 [(validate.rules).string.max_len = 1024];
+      }
+      Container container = 3;
+      // DetectedHostname is the hostname detected by the APM agent. It usually
+      // contains what the hostname command returns on the host machine.
+      // It will be used as the event's hostname if ConfiguredHostname is not
+      // present.
+      string detected_hostname = 4 [(validate.rules).string.max_len = 1024];
+      // Kubernetes system information if the monitored service runs on
+      // Kubernetes.
+      message Kubernetes {
+        // Namespace of the Kubernetes resource the monitored service is run on.
+        string namespace = 1 [(validate.rules).string.max_len = 1024];
+        // Node related information
+        Name node = 2;
+        // Pod related information
+        message Pod {
+          // Name of the Kubernetes Pod
+          string name = 1 [(validate.rules).string.max_len = 1024];
+          // UID is the system-generated string uniquely identifying the Pod.
+          string uid = 2 [(validate.rules).string.max_len = 1024];
+        }
+        Pod pod = 3;
+      }
+      Kubernetes kubernetes = 5;
+      // Platform name of the system platform the monitored service is running
+      // on.
+      string platform = 7 [(validate.rules).string.max_len = 1024];
+    }
+    System system = 4;
+    google.protobuf.Struct labels = 5;
+    // User metadata, which can be overwritten on a per event basis.
+    User user = 6;
+    // Network holds information about the network over which the
+    // monitored service is communicating.
+    Network network = 7;
+  }
+  Metadata metadata = 1;
+  message Transaction {
+    // Context holds arbitrary contextual information for the event.
+    Context context = 1;
+    // DroppedSpanStats holds information about spans that were dropped
+    // (for example due to transaction_max_spans or exit_span_min_duration).
+    repeated DroppedSpanStats dropped_span_stats = 2;
+    // Duration how long the transaction took to complete, in milliseconds
+    // with 3 decimal points.
+    optional double duration = 3 [(validate.rules).double.gte = 0];
+    // FAAS holds fields related to Function as a Service events.
+    Faas faas = 4;
+    // ID holds the hex encoded 64 random bits ID of the event.
+    string id = 5 [(validate.rules).string.max_len = 1024];
+    // Marks capture the timing of a significant event during the lifetime of
+    // a transaction. Marks are organized into groups and can be set by the
+    // user or the agent. Marks are only reported by RUM agents.
+    message MarkEvents {
+      map<string, double> measurements = 1;
+    }
+    map<string, MarkEvents> marks = 19;
+    // Name is the generic designation of a transaction in the scope of a
+    // single service, eg: 'GET /users/:id'.
+    string name = 6 [(validate.rules).string.max_len = 1024];
+    // OTel contains unmapped OpenTelemetry attributes.
+    OTel otel = 7;
+    // Outcome of the transaction with a limited set of permitted values,
+    // describing the success or failure of the transaction from the service's
+    // perspective. It is used for calculating error rates for incoming
+    // requests. Permitted values: success, failure, unknown.
+    Outcome outcome = 8;
+    // ParentID holds the hex encoded 64 random bits ID of the parent
+    // transaction or span.
+    string parent_id = 9 [(validate.rules).string.max_len = 1024];
+    // Result of the transaction. For HTTP-related transactions, this should
+    // be the status code formatted like 'HTTP 2xx'.
+    string result = 10 [(validate.rules).string.max_len = 1024];
+    // Sampled indicates whether or not the full information for a transaction
+    // is captured. If a transaction is unsampled no spans and less context
+    // information will be reported.
+    optional bool sampled = 11;
+    // SampleRate applied to the monitored service at the time where this
+    // transaction
+    // was recorded. Allowed values are [0..1]. A SampleRate <1 indicates that
+    // not all spans are recorded.
+    optional float sample_rate = 12 [(validate.rules).float = {gte: 0, lte: 1}];
+    // Session holds optional transaction session information for RUM.
+    message Session {
+      // ID holds a session ID for grouping a set of related transactions.
+      string id = 1 [(validate.rules).string.max_len = 1024];
+      // Sequence holds an optional sequence number for a transaction within
+      // a session. It is not meaningful to compare sequences across two
+      // different sessions.
+      uint64 sequence = 2 [(validate.rules).uint64.gte = 1];
+    }
+    Session session = 13;
+    // SpanCount counts correlated spans.
+    message SpanCount {
+      // Dropped is the number of correlated spans that have been dropped by
+      // the APM agent recording the transaction.
+      uint32 dropped = 1;
+      // Started is the number of correlated spans that are recorded.
+      uint32 started = 2;
+    }
+    SpanCount span_count = 14 [(validate.rules).message.required = true];
+    // Timestamp holds the recorded time of the event, UTC based and formatted
+    // as microseconds since Unix epoch
+    google.protobuf.Timestamp timestamp = 15;
+    // TraceID holds the hex encoded 128 random bits ID of the correlated trace.
+    string trace_id = 16 [
+      (validate.rules).string = {max_len: 1024, not_in: [""]}
+    ];
+    // Type expresses the transaction's type as keyword that has specific
+    // relevance within the service's domain, eg: 'request', 'backgroundjob'.
+    string type = 17 [(validate.rules).string.max_len = 1024];
+    message UserExperience {
+      // CumulativeLayoutShift holds the Cumulative Layout Shift (CLS) metric
+      // value, or a negative value if CLS is unknown. See https://web.dev/cls/
+      double cls = 1 [(validate.rules).double.gte = 0];
+      // FirstInputDelay holds the First Input Delay (FID) metric value,
+      // or a negative value if FID is unknown. See https://web.dev/fid/
+      double fid = 2  [(validate.rules).double.gte = 0];
+      // Longtask holds longtask duration/count metrics.
+      message LongTaskMetrics {
+        // Count is the total number of of longtasks.
+        uint32 count = 1;
+        // Max longtask duration
+        double max = 2 [(validate.rules).double.gte = 0];
+        // Sum of longtask durations
+        double sum = 3 [(validate.rules).double.gte = 0];
+      }
+      LongTaskMetrics longtask = 3;
+      // TotalBlockingTime holds the Total Blocking Time (TBT) metric value,
+      // or a negative value if TBT is unknown. See https://web.dev/tbt/
+      double tbt = 4 [(validate.rules).double.gte = 0];
+    }
+    UserExperience user_experience = 20;
+    repeated SpanLink links = 18;
+  }
+  Transaction transaction = 2;
+  message Span {
+    // Action holds the specific kind of event within the sub-type represented
+    // by the span (e.g. query, connect)
+    string action = 1 [(validate.rules).string.max_len = 1024];
+    // ChildIDs holds a list of successor transactions and/or spans.
+    repeated string child_ids = 2 [
+      (validate.rules).repeated.items.string.max_len = 1024
+    ];
+    // Composite holds details on a group of spans represented by a single one.
+    SpanComposite composite = 3;
+    // Context holds arbitrary contextual information for the event.
+    SpanContext context = 4;
+    // Duration of the span in milliseconds. When the span is a composite one,
+    // duration is the gross duration, including "whitespace" in between spans.
+    optional double duration = 5 [(validate.rules).double.gte = 0];
+    // ID holds the hex encoded 64 random bits ID of the event.
+    string id = 6 [(validate.rules).string.max_len = 1024];
+    // Name is the generic designation of a span in the scope of a transaction.
+    string name = 7 [(validate.rules).string.max_len = 1024];
+    // Outcome of the span: success, failure, or unknown. Outcome may be one of
+    // a limited set of permitted values describing the success or failure of
+    // the span. It can be used for calculating error rates for outgoing requests.
+    Outcome outcome = 8;
+    // OTel contains unmapped OpenTelemetry attributes.
+    OTel otel = 9;
+    // ParentID holds the hex encoded 64 random bits ID of the parent
+    // transaction or span.
+    // Required
+    optional string parent_id = 10 [
+      (validate.rules).string = {max_len: 1024, not_in: [""]}
+    ];
+    // SampleRate applied to the monitored service at the time where this span
+    // was recorded.
+    optional float sample_rate = 11 [(validate.rules).float = {gte: 0, lte: 1}];
+    // Stacktrace connected to this span event.
+    repeated StackTraceFrame stack_trace = 12;
+    // Start is the offset relative to the transaction's timestamp identifying
+    // the start of the span, in milliseconds.
+    double start = 13;
+    // Subtype is a further sub-division of the type
+    //  (e.g. postgresql, elasticsearch)
+    string subtype = 14 [(validate.rules).string.max_len = 1024];
+    // Sync indicates whether the span was executed synchronously
+    // or asynchronously.
+    optional bool sync = 15;
+    // Timestamp holds the recorded time of the event, UTC based and formatted
+    // as microseconds since Unix epoch
+    google.protobuf.Timestamp timestamp = 16;
+    // TraceID holds the hex encoded 128 random bits ID of the correlated trace.
+    string trace_id = 17 [
+      (validate.rules).string = {max_len: 1024, not_in: [""]}
+    ];
+    // TransactionID holds the hex encoded 64 random bits ID of the correlated
+    // transaction.
+    string transaction_id = 18;
+    // Type holds the span's type, and can have specific keywords
+    // within the service's domain (eg: 'request', 'backgroundjob', etc)
+    string type = 19 [
+      (validate.rules).string = {max_len: 1024, not_in: [""]}
+    ];
+    // Links holds links to other spans, potentially in other traces.
+    repeated SpanLink links = 20;
+  }
+  Span span = 3;
+  message Error {
+    // Context holds arbitrary contextual information for the event.
+    Context context = 1;
+    // Culprit identifies the function call which was the primary perpetrator
+    // of this event.
+    string culprit = 2 [(validate.rules).string.max_len = 1024];
+    // Exception holds information about the original error.
+    // The information is language specific.
+    Exception exception = 3;
+    // ID holds the hex encoded 128 random bits ID of the event.
+    string id = 4 [(validate.rules).string.max_len = 1024];
+    // Log holds additional information added when the error is logged.
+    message Log {
+      // Level represents the severity of the recorded log.
+      string level = 1 [(validate.rules).string.max_len = 1024];
+      // LoggerName holds the name of the used logger instance.
+      string logger_name = 2 [(validate.rules).string.max_len = 1024];
+      // Message of the logged error. In case a parameterized message is
+      // captured,
+      // Message should contain the same information, but with any placeholders
+      // being replaced.
+      string message = 3;
+      // ParamMessage should contain the same information as Message, but with
+      // placeholders where parameters were logged, e.g. 'error connecting to
+      // %s' The string is not interpreted, allowing differnt placeholders per
+      // client languange. The information might be used to group errors
+      // together.
+      string param_message = 4 [(validate.rules).string.max_len = 1024];
+      // Stacktrace information of the captured error.
+      repeated StackTraceFrame stack_trace = 5;
+    }
+    Log log = 9;
+    // ParentID holds the hex encoded 64 random bits ID of the parent
+    // transaction or span.
+    string parent_id = 5 [(validate.rules).string.max_len = 1024];
+    // Timestamp holds the recorded time of the event, UTC based and formatted
+    // as microseconds since Unix epoch.
+    google.protobuf.Timestamp timestamp = 6;
+    // TraceID holds the hex encoded 128 random bits ID of the correlated trace.
+    string trace_id = 7 [(validate.rules).string.max_len = 1024];
+    message Transaction {
+      // Sampled indicates whether or not the full information for a transaction
+      // is captured. If a transaction is unsampled no spans and less context
+      // information will be reported.
+      bool sampled = 1;
+      // Name is the generic designation of a transaction in the scope of a
+      // single service, eg: 'GET /users/:id'.
+      string name = 2 [(validate.rules).string.max_len = 1024];
+      // Type expresses the correlated transaction's type as keyword that has
+      // specific relevance within the service's domain,
+      // eg: 'request', 'backgroundjob'.
+      string type = 3 [(validate.rules).string.max_len = 1024];
+    }
+    Transaction transaction = 10;
+    string transaction_id = 8 [(validate.rules).string.max_len = 1024];
+  }
+  Error error = 4;
+  message Metricset {
+    // TODO(marclop) review if it can be encoded in the google tiestamp.
+    // Timestamp holds the recorded time of the event, UTC based and formatted
+    // as microseconds since Unix epoch
+    google.protobuf.Timestamp timestamp = 1;
+    // Samples hold application metrics collected from the agent.
+    // ^[^*"]*$
+    map<string, MetricsetSample> samples = 2 [
+      (validate.rules).map.min_pairs = 1,
+      (validate.rules).map.keys.string.pattern = "^\\d+$",
+      (validate.rules).map.no_sparse = true
+    ]; // Values must be set.
+    // Span holds selected information about the correlated transaction.
+    message Span {
+      string type = 1 [(validate.rules).string.max_len = 1024];
+      string subtype = 2 [(validate.rules).string.max_len = 1024];
+    }
+    Span span = 3;
+    // Tags are a flat mapping of user-defined tags. On the agent side, tags
+    // are called labels. Allowed value types are string, boolean and number
+    // values. Tags are indexed and searchable.
+    google.protobuf.Struct tags = 4;
+    // Transaction holds selected information about the correlated transaction.
+    message Transaction {
+      string name = 1 [(validate.rules).string.max_len = 1024];
+      string type = 2 [(validate.rules).string.max_len = 1024];
+    }
+    Transaction transaction = 5;
+    // Service holds selected information about the correlated service.
+    NameVersion service = 6;
+    // FAAS holds fields related to Function as a Service events.
+    Faas faas = 7;
+  }
+  Metricset metricset = 5;
+}
+
+// Commonly reused fields.
+
+message IDName {
+  string id = 1;
+  string name = 2;
+}
+
+message NameVersion {
+  string name = 1 [(validate.rules).string.max_len = 1024];
+  string version = 2 [(validate.rules).string.max_len = 1024];
+}
+
+message Name {
+  string name = 1 [(validate.rules).string.max_len = 1024];
+}
+
+message NameType {
+  string name = 1;
+  string type = 2;
+}
+
+message User {
+  // Domain of the logged in user
+  string domain = 1 [(validate.rules).string.max_len = 1024];
+  // ID identifies the logged in user, e.g. can be the primary key of the user
+  oneof id {
+    string id_str = 2 [(validate.rules).string.max_len = 1024];
+    uint32 id_int = 3;
+  }
+  // Email of the user.
+  string email = 4 [(validate.rules).string.email = true];
+  // Name of the user.
+  string name = 5 [(validate.rules).string.max_len = 1024];
+}
+
+message Network {
+  message Connection {
+    // Type of network connection.
+    string type = 1 [(validate.rules).string.max_len = 1024];
+  }
+  Connection connection = 1;
+}
+
+message Faas {
+  // A unique identifier of the invoked serverless function.
+  string id = 1;
+  // Indicates whether a function invocation was a cold start or not.
+  optional bool coldstart = 2;
+  // The request id of the function invocation.
+  string execution = 3;
+  // Trigger attributes.
+  message Trigger {
+    // The trigger type.
+    string type = 1;
+    // The id of the origin trigger request.
+    string request_id = 2;
+  }
+  Trigger trigger = 4;
+  // The lambda function name.
+  string name = 5;
+  // The lambda function version.
+  string version = 6;
+}
+
+message MetricsetSample {
+  // Type holds an optional metric type: gauge, counter, or histogram.
+  //
+  // If Type is unknown, it will be ignored.
+  string type = 1;
+  // Unit holds an optional unit for the metric.
+  //
+  // - "percent" (value is in the range [0,1])
+  // - "byte"
+  // - a time unit: "nanos", "micros", "ms", "s", "m", "h", "d"
+  //
+  // If Unit is unknown, it will be ignored.
+  string unit = 2;
+
+  // NOTE(marclop): protobuf doesn't allow using the `oneof` keyword
+  // with repeated. Ideally we'd use that to leverage protobuf validation
+  // instead of having to validate it ourselves.
+
+  // Value holds the value of a single metric sample.
+  double value = 3;
+  // Values holds the bucket values for histogram metrics.
+  //
+  // Values must be provided in ascending order; failure to do
+  // so will result in the metric being discarded.
+  repeated double values = 4;
+  // Counts holds the bucket counts for histogram metrics.
+  //
+  // These numbers must be positive or zero.
+  //
+  // If Counts is specified, then Values is expected to be
+  // specified with the same number of elements, and with the
+  // same order.
+  repeated int64 counts = 5;
+}
+
+message Context {
+  // Cloud holds fields related to the cloud or infrastructure the events
+  // are coming from.
+  message Cloud {
+    // Origin contains the self-nested field groups for cloud.
+    message Origin {
+      // The cloud account or organization id used to identify
+      // different entities in a multi-tenant environment.
+      message Account {
+        string id = 1;
+      }
+      Account account = 1;
+      // Name of the cloud provider.
+      string provider = 2;
+      // Region in which this host, resource, or service is located.
+      string region = 3;
+      // The cloud service name is intended to distinguish services running
+      // on different platforms within a provider.
+      message Service {
+        // The cloud service name is intended to distinguish services running
+        // on different platforms within a provider.
+        string name = 1;
+      }
+      Service service = 4;
+    }
+    Origin origin = 1;
+  }
+  Cloud cloud = 1;
+  // Custom can contain additional metadata to be stored with the event.
+  // The format is unspecified and can be deeply nested objects.
+  // The information will not be indexed or searchable in Elasticsearch.
+  google.protobuf.Struct custom = 2;
+  // Message holds details related to message receiving and publishing
+  // if the captured event integrates with a messaging system
+  CtxMessage message = 3;
+  // Page holds information related to the current page and page referers.
+  // It is only sent from RUM agents.
+  message CtxPage {
+    // Referer holds the URL of the page that 'linked' to the current page.
+    string referer = 1;
+    // URL of the current page
+    string url = 2;
+  }
+  CtxPage page = 4;
+  // Response describes the HTTP response information in case the event was
+  // created as a result of an HTTP request.
+  message CtxResponse {
+    // DecodedBodySize holds the size of the decoded payload.
+    double decoded_body_size = 1;
+    // EncodedBodySize holds the size of the encoded payload.
+    double encoded_body_size = 2;
+    // Finished indicates whether the response was finished or not.
+    optional bool finished = 3;
+    // Headers holds the http headers sent in the http response.
+    map<string, HTTPHeaderValue> headers = 4;
+    // HeadersSent indicates whether http headers were sent.
+    optional bool headers_sent = 5;
+    // StatusCode sent in the http response.
+    int32 status_code = 6;
+    // TransferSize holds the total size of the payload.
+    double transfer_size = 7;
+  }
+  CtxResponse response = 5;
+  // Request describes the HTTP request information in case the event was
+  // created as a result of an HTTP request.
+  message CtxRequest {
+    // Body only contais the request body, not the query string information.
+    // It can either be a dictionary (for standard HTTP requests) or a raw
+    // request body.
+    google.protobuf.Struct body = 1;
+    // Cookies used by the request, parsed as key-value objects.
+    google.protobuf.Struct cookies = 2;
+    // Env holds environment variable information passed to the monitored
+    // service.
+    google.protobuf.Struct env = 3;
+    // Headers includes any HTTP headers sent by the requester. Cookies will
+    // be taken by headers if supplied.
+    map<string, HTTPHeaderValue> headers = 4;
+    // HTTPVersion holds information about the used HTTP version.
+    string http_version = 5 [(validate.rules).string.max_len = 1024];
+    // Method holds information about the method of the HTTP request.
+    string method = 6 [(validate.rules).string.max_len = 1024];
+    // Socket holds information related to the recorded request,
+    // such as whether or not data were encrypted and the remote address.
+    message CtxRequestSocket {
+      string remote_address = 1;
+    }
+    CtxRequestSocket socket = 7;
+    // URL holds information sucha as the raw URL, scheme, host and path.
+    message CtxRequestURL {
+      // Full, possibly agent-assembled URL of the request,
+      // e.g. https://example.com:443/search?q=elasticsearch#top.
+      string full = 1 [(validate.rules).string.max_len = 1024];
+      // Hash of the request URL, e.g. 'top'
+      string hash = 2 [(validate.rules).string.max_len = 1024];
+      // Hostname information of the request, e.g. 'example.com'."
+      string hostname = 3 [(validate.rules).string.max_len = 1024];
+      // Path of the request, e.g. '/search'
+      string pathname = 4 [(validate.rules).string.max_len = 1024];
+      // port of the request, e.g. '443'. Can be sent as string or int.
+      oneof port {
+        int32 port_int = 5;
+        string port_str = 6 [
+          (validate.rules).string.max_len = 1024,
+          (validate.rules).string.pattern = "^\\d+$"
+        ];
+      }
+      // Protocol information for the recorded request, e.g. 'https:'.
+      string protocol = 7 [(validate.rules).string.max_len = 1024];
+      // Raw unparsed URL of the HTTP request line,
+      // e.g https://example.com:443/search?q=elasticsearch. This URL may be
+      // absolute or relative. For more details, see
+      // https://www.w3.org/Protocols/rfc2616/rfc2616-sec5.html#sec5.1.2.
+      string raw = 8 [(validate.rules).string.max_len = 1024];
+      // Search contains the query string information of the request. It is
+      // expected to have values delimited by ampersands.
+      string search = 9 [(validate.rules).string.max_len = 1024];
+    }
+    CtxRequestURL url = 8;
+  }
+  CtxRequest request = 6;
+  // Service related information can be sent per event. Information provided
+  // here will override the more generic information retrieved from metadata,
+  // missing service fields will be retrieved from the metadata information.
+  CtxService service = 7;
+  // Tags are a flat mapping of user-defined tags. On the agent side, tags
+  // are called labels. Allowed value types are string, boolean and number
+  // values. Tags are indexed and searchable.
+  google.protobuf.Struct tags = 8;
+  // User holds information about the correlated user for this event. If
+  // user data are provided here, all user related information from metadata
+  // is ignored, otherwise the metadata's user information will be stored
+  // with the event.
+  User user = 9;
+}
+
+message Exception {
+  // Attributes of the exception.
+  google.protobuf.Struct attributes = 1;
+  // Code that is set when the error happened, e.g. database error code.
+  oneof code {
+    int32 code_int = 2;
+    string code_str = 3 [(validate.rules).string.max_len = 1024];
+    float code_float = 10;
+  }
+  // Cause can hold a collection of error exceptions representing chained
+  // exceptions. The chain starts with the outermost exception, followed
+  // by its cause, and so on.
+  repeated Exception cause = 4;
+  // Handled indicates whether the error was caught in the code or not.
+  optional bool handled = 5;
+  // Message contains the originally captured error message.
+  string message = 6;
+  // Module describes the exception type's module namespace.
+  string module = 7 [(validate.rules).string.max_len = 1024];
+  // Stacktrace information of the captured exception.
+  repeated StackTraceFrame stack_trace = 8;
+  // Type of the exception.
+  string type = 9 [(validate.rules).string.max_len = 1024];
+}
+
+message StackTraceFrame {
+  // AbsPath is the absolute path of the frame's file.
+  string abs_path = 1;
+  // Classname of the frame.
+  string class_name = 2;
+  // ColumnNumber of the frame.
+  uint32 column_number = 3;
+  // ContextLine is the line from the frame's file.
+  string context_line = 4;
+  // Filename is the relative name of the frame's file.
+  string file_name = 5;
+  // Function represented by the frame.
+  string function = 6;
+  // LibraryFrame indicates whether the frame is from a third party library.
+  bool library_frame = 7;
+  // LineNumber of the frame.
+  uint32 line_number = 8;
+  // Module to which the frame belongs to.
+  string module = 9;
+  // PostContext is a slice of code lines immediately before the line
+  // from the frame's file.
+  repeated string post_context = 10;
+  // PreContext is a slice of code lines immediately after the line
+  // from the frame's file.
+  repeated string pre_context = 11;
+  // Vars is a flat mapping of local variables of the frame.
+  google.protobuf.Struct vars = 12;
+}
+
+message DroppedSpanStats {
+  // DestinationServiceResource identifies the destination service resource
+  // being operated on. e.g. 'http://elastic.co:80', 'elasticsearch',
+  // 'rabbitmq/queue_name'.
+  string destination_service_resource = 1 [
+    (validate.rules).string.max_len = 1024
+  ];
+  // ServiceTargetType identifies the type of the target service being operated
+  // on e.g. 'oracle', 'rabbitmq'
+  string service_target_type = 2 [(validate.rules).string.max_len = 512];
+  // ServiceTargetName identifies the instance name of the target service being
+  // operated on
+  string service_target_name = 3 [(validate.rules).string.max_len = 512];
+  // Outcome of the span: success, failure, or unknown. Outcome may be one of
+  // a limited set of permitted values describing the success or failure of
+  // the span. It can be used for calculating error rates for outgoing requests.
+  Outcome outcome = 4;
+  // Duration holds duration aggregations about the dropped span.
+  message Duration {
+    // Count holds the number of times the dropped span happened.
+    uint32 count = 1 [(validate.rules).uint32.gte = 1];
+    // Sum holds dimensions about the dropped span's duration.
+    message Sum {
+      // Us represents the summation of the span duration.
+      uint64 us = 1;
+    }
+    Sum sum = 2;
+  }
+  Duration duration = 5;
+}
+
+enum Outcome {
+  OUTCOME_UNSPECIFIED = 0;
+  OUTCOME_SUCCESS = 1;
+  OUTCOME_FAILURE = 2;
+}
+
+message SpanLink {
+  // SpanID holds the ID of the linked span.
+  string span_id = 1 [(validate.rules).string.max_len = 1024];
+  // TraceID holds the ID of the linked span's trace.
+  string trace_id = 2 [(validate.rules).string.max_len = 1024];
+}
+
+message Agent {
+  // ephemeral_id is a free format ID used for metrics correlation by agents
+  string ephemeral_id = 1 [(validate.rules).string.max_len = 1024];
+  // Name of the APM agent capturing information.
+  string name = 2 [(validate.rules).string.max_len = 1024];
+  // Version of the APM agent capturing information.
+  string version = 3 [(validate.rules).string.max_len = 1024];
+}
+
+// TODO(marclop) verify this works as expected.
+message HTTPHeaderValue {
+  repeated string values = 1;
+}
+
+message SpanComposite {
+  // Count is the number of compressed spans the composite span represents.
+  // The minimum count is 2, as a composite span represents at least two spans.
+  uint32 count = 1 [(validate.rules).uint32.gte = 2];
+  // Sum is the durations of all compressed spans this composite span
+  // represents in milliseconds.
+  double sum = 2 [(validate.rules).double.gte = 0];
+  // A string value indicating which compression strategy was used. The valid
+  // values are `exact_match` and `same_kind`.
+  CompressionStrategy compression_strategy = 3 [
+    (validate.rules).enum = {not_in: [0]}
+  ]; // Cannot be UNSPECIFIED.
+}
+
+enum CompressionStrategy {
+  COMPRESSION_STRATEGY_UNSPECIFIED = 0;
+  COMPRESSION_STRATEGY_EXACT_MATCH = 1;
+  COMPRESSION_STRATEGY_SAME_KIND = 2;
+}
+
+message SpanContext {
+  // Database contains contextual data for database spans
+  message Database {
+    // Instance name of the database.
+    string instance = 1;
+    // Link to the database server.
+    string link = 2 [(validate.rules).string.max_len = 1024];
+    // RowsAffected shows the number of rows affected by the statement.
+    uint64 rows_affected = 3;
+    // Statement of the recorded database event, e.g. query.
+    string statement = 4;
+    // Type of the recorded database event., e.g. sql, cassandra, hbase, redis.
+    string type = 5;
+    // User is the username with which the database is accessed.
+    string user = 6;
+  }
+  Database database = 1;
+  // Destination contains contextual data about the destination of spans
+  message Destination {
+    // Address is the destination network address:
+    // hostname (e.g. 'localhost'),
+    // FQDN (e.g. 'elastic.co'),
+    // IPv4 (e.g. '127.0.0.1')
+    // IPv6 (e.g. '::1')
+    // TODO(marclop) investigate using: (validate.rules).string.address = true
+    string address = 1 [(validate.rules).string.max_len = 1024];
+    // Port is the destination network port (e.g. 443)
+    uint32 port = 2;
+  }
+  Destination destination = 2;
+  // HTTP contains contextual info when the span concerns an HTTP request.
+  message HTTP {
+    // Method holds information about the method of the HTTP request.
+    string method = 1 [(validate.rules).string.max_len = 1024];
+    // Response describes the HTTP response information in case the event was
+    // created as a result of an HTTP request.
+    message Response {
+      // DecodedBodySize holds the size of the decoded payload.
+      double decoded_body_size = 1;
+      // EncodedBodySize holds the size of the encoded payload.
+      double encoded_body_size = 2;
+      // Headers received with the message, similar to HTTP request headers.
+      map<string, HTTPHeaderValue> headers = 3;
+      // StatusCode sent in the http response.
+      uint32 status_code = 4;
+      // TransferSize holds the total size of the payload.
+      double transfer_size = 5;
+    }
+    Response response = 2;
+
+    // URL is the raw url of the correlating HTTP request.
+    string url = 4;
+  }
+  HTTP http = 3;
+  // Message holds details related to message receiving and publishing
+  // if the captured event integrates with a messaging system
+  CtxMessage message = 4;
+  // Service related information can be sent per span. Information provided
+  // here will override the more generic information retrieved from metadata,
+  // missing service fields will be retrieved from the metadata information.
+  CtxService service = 5;
+  // Tags are a flat mapping of user-defined tags. On the agent side, tags
+  // are called labels. Allowed value types are string, boolean and number
+  // values. Tags are indexed and searchable.
+  google.protobuf.Struct tags = 6 ;
+}
+
+message OTel {
+  // SpanKind holds the incoming OpenTelemetry span kind.
+  string span_kind = 1;
+  // Attributes hold the unmapped OpenTelemetry attributes.
+  google.protobuf.Struct attributes = 2;
+}
+
+message CtxMessage {
+  // Age of the message. If the monitored messaging framework provides a
+  // timestamp for the message, agents may use it. Otherwise, the sending
+  // agent can add a timestamp in milliseconds since the Unix epoch to the
+  // message's metadata to be retrieved by the receiving agent. If a
+  // timestamp is not available, agents should omit this field.
+  message CtxMessageAge {
+    uint64 milliseconds = 1;
+  }
+  CtxMessageAge age = 1;
+  // Body of the received message, similar to an HTTP request body
+  string body = 2;
+  // Headers received with the message, similar to HTTP request headers.
+  map<string, HTTPHeaderValue> headers = 3;
+  // Queue holds information about the message queue where the message is
+  // received.
+  message CtxMessageQueue {
+    string name = 1 [(validate.rules).string.max_len = 1024];
+  }
+  CtxMessageQueue queue = 4;
+  // RoutingKey holds the optional routing key of the received message as set
+  // on the queuing system, such as in RabbitMQ.
+  string routing_key = 5;
+}
+
+message CtxService {
+  // Agent holds information about the APM agent capturing the event.
+  Agent agent = 1;
+  // Environment in which the monitored service is running,
+  // e.g. `production` or `staging`.
+  string environment = 2 [(validate.rules).string.max_len = 1024];
+  // Framework holds information about the framework used in the
+  // monitored service.
+  NameVersion framework = 3;
+  // ID holds a unique identifier for the service.
+  string id = 4;
+  // Language holds information about the programming language of the
+  // monitored service.
+  NameVersion language = 5;
+  // Name of the monitored service.
+  string name = 6 [
+    (validate.rules).string.max_len = 1024,
+    (validate.rules).string.pattern = "^[a-zA-Z0-9 _-]+$"
+  ];
+  // Node must be a unique meaningful name of the service node.
+  Name node = 7;
+  // Origin contains the self-nested field groups for service.
+  message CtxServiceOrigin {
+    string id = 1;
+    string name = 2;
+    string version = 3;
+  }
+  CtxServiceOrigin origin = 8;
+  // Runtime holds information about the language runtime running the
+  // monitored service
+  NameVersion runtime = 9;
+  // Target holds information about the outgoing service in case of
+  // an outgoing event
+  NameType target = 10;
+  // Version of the monitored service.
+  string version = 11;
+}

@@ -153,3 +153,15 @@ func (e *APMEvent) BeatEvent() beat.Event {
 	fields.maybeSetMapStr("log", e.Log.fields())
 	return event
 }
+
+// Copy performs a shallow copy of the APMEvent deep copying the labels.
+func (e *APMEvent) Copy() APMEvent {
+	var out = *e
+	if out.Labels != nil {
+		out.Labels = out.Labels.Clone()
+	}
+	if out.NumericLabels != nil {
+		out.NumericLabels = out.NumericLabels.Clone()
+	}
+	return out
+}

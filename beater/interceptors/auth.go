@@ -81,6 +81,48 @@ func Auth(methodHandlers ...map[string]MethodAuthenticator) grpc.UnaryServerInte
 	}
 }
 
+// AuthStream returns a grpc.StreamServerInterceptor that ensures method calls
+// are authenticated before passing on to the next handler.
+//
+// Authentication is performed using a MethodAuthenticator from the combined
+// map parameters, keyed on the full gRPC method name (info.FullMethod).
+// If there is no handler defined for the method, authentication fails.
+func AuthStream(methodHandlers ...map[string]MethodAuthenticator) grpc.StreamServerInterceptor {
+	combinedMethodHandlers := make(map[string]MethodAuthenticator)
+	for _, methodHandlers := range methodHandlers {
+		for method, handler := range methodHandlers {
+			combinedMethodHandlers[method] = handler
+		}
+	}
+	return func(
+		srv interface{},
+		ss grpc.ServerStream,
+		info *grpc.StreamServerInfo,
+		handler grpc.StreamHandler,
+	) error {
+		authenticator, ok := combinedMethodHandlers[info.FullMethod]
+		ctx := ss.Context()
+		if !ok {
+			return status.Errorf(codes.Unauthenticated, "no auth method defined for %q", info.FullMethod)
+		}
+		details, authz, err := authenticator(ctx, srv)
+		if err != nil {
+			if errors.Is(err, auth.ErrAuthFailed) {
+				return status.Error(codes.Unauthenticated, err.Error())
+			}
+			return err
+		}
+		ctx = ContextWithAuthenticationDetails(ctx, details)
+		ctx = auth.ContextWithAuthorizer(ctx, authz)
+		err = handler(srv, wrapStream{ctx: ctx, ServerStream: ss})
+		if errors.Is(err, auth.ErrUnauthorized) {
+			// Processors may indicate that a request is unauthorized by returning auth.ErrUnauthorized.
+			err = status.Error(codes.PermissionDenied, err.Error())
+		}
+		return err
+	}
+}
+
 // MetadataMethodAuthenticator returns a MethodAuthenticator that extracts
 // authentication parameters from the "authorization" metadata in ctx,
 // calling authenticator.Authenticate.

@@ -36,50 +36,96 @@ func Metrics(
 	logger *logp.Logger,
 	methodMetrics ...map[string]map[request.ResultID]*monitoring.Int,
 ) grpc.UnaryServerInterceptor {
-
 	allMethodMetrics := make(map[string]map[request.ResultID]*monitoring.Int)
 	for _, methodMetrics := range methodMetrics {
 		for method, metrics := range methodMetrics {
 			allMethodMetrics[method] = metrics
 		}
 	}
-
 	return func(
 		ctx context.Context,
 		req interface{},
 		info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (interface{}, error) {
+		var resp interface{}
+		err := handleMetrics(func() (err error) {
+			resp, err = handler(ctx, req)
+			return err
+		}, logger, info.FullMethod, allMethodMetrics)
+		return resp, err
+	}
+}
+
+// MetricsStream returns a grpc.StreamServerInterceptor that increments metrics
+// for gRPC method calls. The full gRPC method name will be used to look up a
+// monitoring map in any of the given maps; the last one wins.
+func MetricsStream(
+	logger *logp.Logger,
+	methodMetrics ...map[string]map[request.ResultID]*monitoring.Int,
+) grpc.StreamServerInterceptor {
+	allMethodMetrics := make(map[string]map[request.ResultID]*monitoring.Int)
+	for _, methodMetrics := range methodMetrics {
+		for method, metrics := range methodMetrics {
+			allMethodMetrics[method] = metrics
+		}
+	}
+	return func(
+		srv interface{},
+		ss grpc.ServerStream,
+		info *grpc.StreamServerInfo,
+		handler grpc.StreamHandler,
+	) error {
 		m, ok := allMethodMetrics[info.FullMethod]
 		if !ok {
 			logger.With(
 				"grpc.request.method", info.FullMethod,
 			).Error("metrics registry missing")
-			return handler(ctx, req)
 		}
+		return handler(srv, metricsWrapper{ServerStream: ss, m: m})
+	}
+}
 
-		m[request.IDRequestCount].Inc()
-		defer m[request.IDResponseCount].Inc()
+func handleMetrics(handler func() error, logger *logp.Logger, method string, allMethodMetrics map[string]map[request.ResultID]*monitoring.Int) error {
+	m, ok := allMethodMetrics[method]
+	if !ok {
+		logger.With(
+			"grpc.request.method", method,
+		).Error("metrics registry missing")
+		return handler()
+	}
 
-		resp, err := handler(ctx, req)
+	m[request.IDRequestCount].Inc()
+	defer m[request.IDResponseCount].Inc()
+	return handleMetricsError(handler(), m)
+}
 
-		responseID := request.IDResponseValidCount
-		if err != nil {
-			responseID = request.IDResponseErrorsCount
-			if s, ok := status.FromError(err); ok {
-				switch s.Code() {
-				case codes.Unauthenticated:
-					m[request.IDResponseErrorsUnauthorized].Inc()
-				case codes.DeadlineExceeded:
-					m[request.IDResponseErrorsTimeout].Inc()
-				case codes.ResourceExhausted:
-					m[request.IDResponseErrorsRateLimit].Inc()
-				}
+func handleMetricsError(err error, m map[request.ResultID]*monitoring.Int) error {
+	responseID := request.IDResponseValidCount
+	if err != nil {
+		responseID = request.IDResponseErrorsCount
+		if s, ok := status.FromError(err); ok {
+			switch s.Code() {
+			case codes.Unauthenticated:
+				m[request.IDResponseErrorsUnauthorized].Inc()
+			case codes.DeadlineExceeded:
+				m[request.IDResponseErrorsTimeout].Inc()
+			case codes.ResourceExhausted:
+				m[request.IDResponseErrorsRateLimit].Inc()
 			}
 		}
-
-		m[responseID].Inc()
-
-		return resp, err
 	}
+	m[responseID].Inc()
+	return err
+}
+
+type metricsWrapper struct {
+	grpc.ServerStream
+	m map[request.ResultID]*monitoring.Int
+}
+
+func (w metricsWrapper) RecvMsg(m interface{}) error {
+	err := w.ServerStream.RecvMsg(m)
+	handleMetricsError(err, w.m)
+	return nil
 }

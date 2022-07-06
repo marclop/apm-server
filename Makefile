@@ -293,3 +293,23 @@ smoketest:
 	@ echo "-> Running smoke tests for versions: $(SMOKETEST_VERSIONS)..."
 	@ for version in $(shell echo $(SMOKETEST_VERSIONS) | tr ',' ' '); do cd ./testing/smoke/basic_upgrade && ./basic-upgrade.sh $$version; if [ $$version == 7.17 ]; then ./legacy-managed.sh && ./standalone-major-managed.sh; fi; cd -; done
 	@ echo "-> Smoke tests passed!"
+
+##############################################################################
+# Protobuf generation
+##############################################################################
+
+PROTOC_OUT?=.
+
+.PHONY: gen-proto
+gen-proto: $(PROTOC_GEN_GO) $(PROTOC_GEN_GO_GRPC) $(PROTOC_GEN_GO_VTPROTO) ${PROTOC_GEN_VALIDATE} $(PROTOC_GEN_VALIDATE_PATH) $(PROTOC)
+	$(eval STRUCTS := $(shell grep 'struct {' modelproto/v2/model.pb.go modelproto/v2/service.pb.go | cut -d ' ' -f2))
+	$(eval PROTOC_VT_STRUCTS := $(shell for s in $(STRUCTS); do echo --go-vtproto_opt=pool=modelproto/v2.$$s ;done))
+	$(PROTOC) -I . -I $(PROTOC_GEN_VALIDATE_PATH) \
+	--go_out=$(PROTOC_OUT) --plugin protoc-gen-go="$(PROTOC_GEN_GO)" \
+	--go-grpc_out=$(PROTOC_OUT) --plugin protoc-gen-go-grpc="$(PROTOC_GEN_GO_GRPC)" \
+	--go-vtproto_out=$(PROTOC_OUT) --plugin protoc-gen-go-vtproto="$(PROTOC_GEN_GO_VTPROTO)" \
+	--validate_out="lang=go:$(PROTOC_OUT)" --plugin protoc-gen-validate="$(PROTOC_GEN_VALIDATE)" \
+	--go-vtproto_opt=features=marshal+unmarshal+size+pool \
+	$(PROTOC_VT_STRUCTS) \
+	$(wildcard modelproto/v2/*.proto)
+	@ $(MAKE) add-headers
