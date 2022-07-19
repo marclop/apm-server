@@ -19,7 +19,10 @@ package systemtest_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -213,6 +216,88 @@ func TestTailSamplingUnlicensed(t *testing.T) {
 	// The server will wait for the enqueued events to be published before
 	// shutting down gracefully, so shutdown forcefully.
 	srv.Kill()
+}
+
+func TestTailSamplingReload(t *testing.T) {
+	// This test aims to verify that when reconfiguring the Tail Based sampler,
+	// there isn't any meaningful event loss.
+	// Initially, I tried sending a continuous stream of events to verify there
+	// wasn't any event loss but there appears to be event loss when going from
+	// `tail_sampling_enabled: true` to `tail_sampling_enabled: false`. The main
+	// hypothesis is that since the tail sampler has not been stopped, the events
+	// processed and stored in the local sampled events (badgerDB), and when the
+	// sampler is stopped those events aren't flushed unless the tail_sampling_interval
+	// ticks and publishes the locally sampled events to Elasticsearch.
+	systemtest.CleanupElasticsearch(t)
+
+	const sampleRate = 0.5
+	srv := newAPMIntegration(t, map[string]interface{}{
+		"tail_sampling_enabled":  true,
+		"tail_sampling_interval": "1s",
+		"tail_sampling_policies": []map[string]interface{}{{"sample_rate": sampleRate}},
+	})
+
+	const initial = 200
+	const remainder = 800
+	const txType = "tx"
+	expected := int(initial*sampleRate) + remainder
+	// Send initial 200 transactions
+	for i := 0; i < initial; i++ {
+		parent := srv.Tracer.StartTransaction("GET /", txType)
+		parent.Duration = time.Second * time.Duration(i+1)
+		parent.End()
+	}
+	srv.Tracer.Flush(nil)
+	time.Sleep(2 * time.Second)
+	dumpStatsOut(t, srv)
+	t.Log("updating the APM integration...")
+	srv.updatePolicy(t, map[string]interface{}{"tail_sampling_enabled": false})
+	t.Log("updated the APM integration")
+	// Send transactions immediately, which should cause us to end up sampling
+	// 50% of the 800 transactions sent since the processor hasn't been shut down.
+	// 500 total sampled transactions at this point.
+	for i := 0; i < remainder; i++ {
+		parent := srv.Tracer.StartTransaction("GET /", txType)
+		parent.Duration = time.Second * time.Duration(i+1)
+		parent.End()
+	}
+	srv.Tracer.Flush(nil)
+	dumpStatsOut(t, srv)
+	defer func() {
+		if t.Failed() {
+			dumpStatsOut(t, srv)
+		}
+	}()
+	// Wait for a second to allow the server to stop the sampler.
+	time.Sleep(time.Second)
+	// Send 400 transactions all of which should be sampled.
+	// 900 total sampled transactions.
+	for i := 0; i < remainder/2; i++ {
+		parent := srv.Tracer.StartTransaction("GET /", txType)
+		parent.Duration = time.Second * time.Duration(i+1)
+		parent.End()
+	}
+	srv.Tracer.Flush(nil)
+	var result estest.SearchResult
+	t.Logf("waiting for %d %q transactions", expected, txType)
+	total := initial + remainder
+	_, err := systemtest.Elasticsearch.
+		Search("traces-*").
+		WithSize(total).
+		WithQuery(estest.TermQuery{Field: "transaction.type", Value: txType}).
+		Do(context.Background(), &result, estest.WithCondition(
+			result.Hits.MinHitsCondition(expected)),
+		)
+	require.NoError(t, err)
+	assert.Equal(t, expected, len(result.Hits.Hits), txType)
+}
+
+func dumpStatsOut(t testing.TB, srv apmIntegration) {
+	fmt.Printf("%+v\n", srv.Tracer.Stats())
+	out := make(map[string]interface{})
+	srv.getBeatsMonitoringStats(t, &out)
+	enc := json.NewEncoder(os.Stdout)
+	enc.Encode(out)
 }
 
 func refreshPeriodically(t *testing.T, interval time.Duration, index ...string) {

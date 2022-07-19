@@ -118,3 +118,10 @@ type EnrollmentAPIKey struct {
 	// and not when listing keys.
 	APIKey string `json:"api_key,omitempty"`
 }
+
+type CreateAgentPolicyResponse struct {
+	*AgentPolicy
+	*EnrollmentAPIKey
+	*PackagePolicy
+	PackagePolicyID string
+}

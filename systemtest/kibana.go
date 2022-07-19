@@ -132,7 +132,7 @@ func InitFleetPackage(reinstall bool) error {
 //
 // This should typically be used by tests instead of directly calling the
 // fleettest.Client.CreateAgentPolicy method.
-func CreateAgentPolicy(t testing.TB, name, namespace string, vars map[string]interface{}) (*fleettest.AgentPolicy, *fleettest.EnrollmentAPIKey) {
+func CreateAgentPolicy(t testing.TB, name, namespace string, vars map[string]interface{}) *fleettest.CreateAgentPolicyResponse {
 	agentPolicy, key, err := Fleet.CreateAgentPolicy(name, namespace, agentPolicyDescription)
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -141,10 +141,21 @@ func CreateAgentPolicy(t testing.TB, name, namespace string, vars map[string]int
 	})
 
 	packagePolicy := NewPackagePolicy(agentPolicy, vars)
-	err = Fleet.CreatePackagePolicy(packagePolicy)
+	pkgID, err := Fleet.CreatePackagePolicy(packagePolicy)
 	require.NoError(t, err)
 
-	return agentPolicy, key
+	return &fleettest.CreateAgentPolicyResponse{
+		PackagePolicy:    packagePolicy,
+		AgentPolicy:      agentPolicy,
+		EnrollmentAPIKey: key,
+		PackagePolicyID:  pkgID,
+	}
+}
+
+// UpdatePolicy updates a package policy
+func UpdatePolicy(t testing.TB, id string, p *fleettest.PackagePolicy) {
+	err := Fleet.UpdatePackagePolicy(id, p)
+	require.NoError(t, err)
 }
 
 // DestroyAgentPolicy deletes the agent policies with given IDs,
@@ -189,7 +200,12 @@ func NewPackagePolicy(agentPolicy *fleettest.AgentPolicy, varValues map[string]i
 	packagePolicy.Package.Name = IntegrationPackage.Name
 	packagePolicy.Package.Version = IntegrationPackage.Version
 	packagePolicy.Package.Title = IntegrationPackage.Title
+	MergeVars(packagePolicy, varValues)
+	return packagePolicy
+}
 
+// MergeVars merges an incoming set of variables into an existing package policy.
+func MergeVars(policy *fleettest.PackagePolicy, varValues map[string]interface{}) {
 	for _, input := range IntegrationPackage.PolicyTemplates[0].Inputs {
 		vars := make(map[string]interface{})
 		for _, inputVar := range input.Vars {
@@ -210,14 +226,22 @@ func NewPackagePolicy(agentPolicy *fleettest.AgentPolicy, varValues map[string]i
 			}
 			vars[inputVar.Name] = varMap
 		}
-		packagePolicy.Inputs = append(packagePolicy.Inputs, fleettest.PackagePolicyInput{
-			Type:    input.Type,
-			Enabled: true,
-			Streams: []interface{}{},
-			Vars:    vars,
-		})
+		var hasAPMInput bool
+		for i := range policy.Inputs {
+			if policy.Inputs[i].Type == "apm" {
+				hasAPMInput = true
+				policy.Inputs[i].Vars = vars
+			}
+		}
+		if !hasAPMInput {
+			policy.Inputs = append(policy.Inputs, fleettest.PackagePolicyInput{
+				Type:    input.Type,
+				Enabled: true,
+				Streams: []interface{}{},
+				Vars:    vars,
+			})
+		}
 	}
-	return packagePolicy
 }
 
 func inputVarDefault(inputVar fleettest.PackagePolicyTemplateInputVar) interface{} {

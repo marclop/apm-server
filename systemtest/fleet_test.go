@@ -40,6 +40,7 @@ import (
 
 	"github.com/elastic/apm-server/systemtest"
 	"github.com/elastic/apm-server/systemtest/apmservertest"
+	"github.com/elastic/apm-server/systemtest/fleettest"
 )
 
 func TestFleetIntegration(t *testing.T) {
@@ -144,12 +145,12 @@ func TestFleetIntegrationAnonymousAuth(t *testing.T) {
 }
 
 func TestFleetPackageNonMultiple(t *testing.T) {
-	agentPolicy, _ := systemtest.CreateAgentPolicy(t, "apm_systemtest", "default", nil)
+	resp := systemtest.CreateAgentPolicy(t, "apm_systemtest", "default", nil)
 
 	// Attempting to add the "apm" integration to the agent policy twice should fail.
-	packagePolicy := systemtest.NewPackagePolicy(agentPolicy, nil)
+	packagePolicy := systemtest.NewPackagePolicy(resp.AgentPolicy, nil)
 	packagePolicy.Name = "apm-2"
-	err := systemtest.Fleet.CreatePackagePolicy(packagePolicy)
+	_, err := systemtest.Fleet.CreatePackagePolicy(packagePolicy)
 	require.Error(t, err)
 	assert.EqualError(t, err, "Unable to create package policy. Package 'apm' already exists on this agent policy.")
 }
@@ -158,7 +159,7 @@ func TestFleetPackageNonMultiple(t *testing.T) {
 // with the provided config vars.
 func newAPMIntegration(t testing.TB, vars map[string]interface{}) apmIntegration {
 	policyName := fmt.Sprintf("apm_systemtest_%d", atomic.AddInt64(&apmIntegrationCounter, 1))
-	_, enrollmentAPIKey := systemtest.CreateAgentPolicy(t, policyName, "default", vars)
+	resp := systemtest.CreateAgentPolicy(t, policyName, "default", vars)
 
 	// Enroll an elastic-agent to run the APM integration.
 	var output bytes.Buffer
@@ -166,7 +167,7 @@ func newAPMIntegration(t testing.TB, vars map[string]interface{}) apmIntegration
 	require.NoError(t, err)
 	agent.Stdout = &output
 	agent.Stderr = &output
-	agent.FleetEnrollmentToken = enrollmentAPIKey.APIKey
+	agent.FleetEnrollmentToken = resp.EnrollmentAPIKey.APIKey
 	t.Cleanup(func() {
 		// Log the elastic-agent container output if the test fails.
 		if !t.Failed() {
@@ -213,16 +214,19 @@ func newAPMIntegration(t testing.TB, vars map[string]interface{}) apmIntegration
 	require.NoError(t, err)
 	t.Cleanup(tracer.Close)
 	return apmIntegration{
-		Agent:  agent,
-		Tracer: tracer,
-		URL:    serverURL.String(),
+		Agent:           agent,
+		Tracer:          tracer,
+		URL:             serverURL.String(),
+		packagePolicy:   resp.PackagePolicy,
+		packagePolicyID: resp.PackagePolicyID,
 	}
 }
 
 var apmIntegrationCounter int64
 
 type apmIntegration struct {
-	Agent *systemtest.ElasticAgentContainer
+	Agent         *systemtest.ElasticAgentContainer
+	packagePolicy *fleettest.PackagePolicy
 
 	// Tracer holds an apm.Tracer that may be used to send events
 	// to the server.
@@ -230,6 +234,9 @@ type apmIntegration struct {
 
 	// URL holds the APM Server URL.
 	URL string
+
+	// The ID of the created APM package policy.
+	packagePolicyID string
 }
 
 func (a *apmIntegration) getBeatsMonitoringState(t testing.TB, out interface{}) *beatsMonitoringDoc {
@@ -279,6 +286,11 @@ func (a *apmIntegration) getBeatsMonitoring(t testing.TB, type_ string, out inte
 		}
 	}
 	return &doc
+}
+
+func (a *apmIntegration) updatePolicy(t testing.TB, vars map[string]interface{}) {
+	systemtest.MergeVars(a.packagePolicy, vars)
+	systemtest.UpdatePolicy(t, a.packagePolicyID, a.packagePolicy)
 }
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)

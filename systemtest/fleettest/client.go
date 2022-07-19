@@ -284,12 +284,35 @@ func (c *Client) PackagePolicy(id string) (*PackagePolicy, error) {
 }
 
 // CreatePackagePolicy adds an integration to a policy.
-func (c *Client) CreatePackagePolicy(p *PackagePolicy) error {
+func (c *Client) CreatePackagePolicy(p *PackagePolicy) (string, error) {
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(p); err != nil {
+		return "", err
+	}
+	req := c.newFleetRequest("POST", "/package_policies", &body)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Item struct {
+			ID string `json:"id,omitempty"`
+		} `json:"item,omitempty"`
+	}
+	if err := consumeResponse(resp, &out); err != nil {
+		return "", err
+	}
+	return out.Item.ID, nil
+}
+
+// UpdatePackagePolicy updates an existing integration.
+func (c *Client) UpdatePackagePolicy(id string, p *PackagePolicy) error {
 	var body bytes.Buffer
 	if err := json.NewEncoder(&body).Encode(p); err != nil {
 		return err
 	}
-	req := c.newFleetRequest("POST", "/package_policies", &body)
+	req := c.newFleetRequest("PUT", "/package_policies/"+id, &body)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err

@@ -119,7 +119,7 @@ func Main() error {
 		return err
 	}
 	packagePolicy := systemtest.NewPackagePolicy(agentPolicy, vars)
-	if err := systemtest.Fleet.CreatePackagePolicy(packagePolicy); err != nil {
+	if _, err := systemtest.Fleet.CreatePackagePolicy(packagePolicy); err != nil {
 		return err
 	}
 	reap := !keep || !background

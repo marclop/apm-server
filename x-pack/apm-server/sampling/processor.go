@@ -429,23 +429,36 @@ func (p *Processor) Run() error {
 		ticker := time.NewTicker(p.config.FlushInterval)
 		defer ticker.Stop()
 		var traceIDs []string
+		publishDecisions := func() error {
+			p.logger.Debug("finalizing local sampling reservoirs")
+			traceIDs = p.groups.finalizeSampledTraces(traceIDs)
+			if len(traceIDs) == 0 {
+				return nil
+			}
+			var g errgroup.Group
+			g.Go(func() error { return sendTraceIDs(ctx, publishSampledTraceIDs, traceIDs) })
+			g.Go(func() error { return sendTraceIDs(ctx, localSampledTraceIDs, traceIDs) })
+			if err := g.Wait(); err != nil {
+				return err
+			}
+			traceIDs = traceIDs[:0]
+			return nil
+		}
+		var once sync.Once
 		for {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
 			case <-ticker.C:
-				p.logger.Debug("finalizing local sampling reservoirs")
-				traceIDs = p.groups.finalizeSampledTraces(traceIDs)
-				if len(traceIDs) == 0 {
-					continue
-				}
-				var g errgroup.Group
-				g.Go(func() error { return sendTraceIDs(ctx, publishSampledTraceIDs, traceIDs) })
-				g.Go(func() error { return sendTraceIDs(ctx, localSampledTraceIDs, traceIDs) })
-				if err := g.Wait(); err != nil {
+				if err := publishDecisions(); err != nil {
 					return err
 				}
-				traceIDs = traceIDs[:0]
+			case <-p.stopping:
+				// TODO(marclop) REMOVE?
+				once.Do(func() {
+					p.logger.Info("finalizing local sampling reservoirs on stop action")
+					publishDecisions()
+				})
 			}
 		}
 	})
@@ -499,6 +512,8 @@ func (p *Processor) Run() error {
 						}
 					}
 				}
+				// TODO(marclop) REMOVE
+				p.logger.Info("sending local events to elasticsearch")
 				atomic.AddInt64(&p.eventMetrics.sampled, int64(len(events)))
 				if err := p.config.BatchProcessor.ProcessBatch(ctx, &events); err != nil {
 					p.logger.With(logp.Error(err)).Warn("failed to report events")
