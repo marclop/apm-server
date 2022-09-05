@@ -133,10 +133,10 @@ func New(client elasticsearch.Client, cfg Config) (*Indexer, error) {
 		)
 	}
 	if cfg.MaxRequests <= 0 {
-		cfg.MaxRequests = 10
+		cfg.MaxRequests = 40
 	}
 	if cfg.FlushBytes <= 0 {
-		cfg.FlushBytes = 5 * 1024 * 1024
+		cfg.FlushBytes = 1 * 1024 * 1024
 	}
 	if cfg.FlushInterval <= 0 {
 		cfg.FlushInterval = 30 * time.Second

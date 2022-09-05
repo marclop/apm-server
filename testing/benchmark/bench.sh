@@ -6,7 +6,7 @@ export BENCHMARK_RUN='BenchmarkOTLP|BenchmarkAgentAll'
 export BENCHMARK_AGENTS=512
 export BENCHMARK_WARMUP_TIME=1m
 
-SHARDS=( 1 5 10 15 20 24 )
+SHARDS=( 1 5 15 24 )
 
 for shard in "${SHARDS[@]}"; do
 	export TF_VAR_apm_shards=${shard}
