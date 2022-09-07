@@ -168,6 +168,9 @@ func (b *bulkIndexer) Flush(ctx context.Context) (elasticsearch.BulkIndexerRespo
 	// Record the number of flushed bytes only when err == nil. The body may
 	// not have been sent otherwise.
 	b.bytesFlushed = bytesFlushed
+	// NOTE(marclop): Uncomment for "fake transport", comment req.Do above too.
+	// io.Copy(io.Discard, &b.buf)
+	// return elasticsearch.BulkIndexerResponse{}, nil
 	if res.IsError() {
 		if res.StatusCode == http.StatusTooManyRequests {
 			return elasticsearch.BulkIndexerResponse{}, errorTooManyRequests{res: res}

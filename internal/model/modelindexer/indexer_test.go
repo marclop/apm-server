@@ -86,7 +86,9 @@ func TestModelIndexer(t *testing.T) {
 		require.NoError(t, err)
 	}
 	// Indexer has not been flushed, there is one active bulk indexer.
-	assert.Equal(t, modelindexer.Stats{Added: N, Active: N, AvailableBulkRequests: 9}, indexer.Stats())
+	assert.Equal(t, modelindexer.Stats{
+		Added: N, Active: N, AvailableBulkRequests: 29, ConcurrentBulkRequests: 1,
+	}, indexer.Stats())
 
 	// Closing the indexer flushes enqueued events.
 	err = indexer.Close(context.Background())
@@ -99,7 +101,7 @@ func TestModelIndexer(t *testing.T) {
 		Failed:                2,
 		Indexed:               N - 2,
 		TooManyRequests:       1,
-		AvailableBulkRequests: 10,
+		AvailableBulkRequests: 30,
 		BytesTotal:            bytesTotal,
 	}, stats)
 	assert.Equal(t, "observability", productOriginHeader)
@@ -117,7 +119,7 @@ func TestModelIndexerAvailableBulkIndexers(t *testing.T) {
 	require.NoError(t, err)
 	defer indexer.Close(context.Background())
 
-	const N = 10
+	const N = 30
 	for i := 0; i < N; i++ {
 		batch := model.Batch{model.APMEvent{Timestamp: time.Now(), DataStream: model.DataStream{
 			Type:      "logs",
@@ -127,21 +129,44 @@ func TestModelIndexerAvailableBulkIndexers(t *testing.T) {
 		err := indexer.ProcessBatch(context.Background(), &batch)
 		require.NoError(t, err)
 	}
-	stats := indexer.Stats()
-	// FlushBytes is set arbitrarily low, forcing a flush on each new
-	// event. There should be no available bulk indexers.
-	assert.Equal(t, modelindexer.Stats{Added: N, Active: N, AvailableBulkRequests: 0}, stats)
+
+	timeout := time.After(100 * time.Millisecond)
+	statsChan := make(chan modelindexer.Stats)
+	go func() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			stats := indexer.Stats()
+			if stats.AvailableBulkRequests == 0 {
+				statsChan <- stats
+			}
+			<-ticker.C
+		}
+	}()
+	select {
+	case <-timeout:
+		t.Fatal("timed out waiting for available indexers to become 0")
+	case stats := <-statsChan:
+		if stats.AvailableBulkRequests == 0 {
+			// FlushBytes is set arbitrarily low, forcing a flush on each new
+			// event. There should be no available bulk indexers.
+			assert.Equal(t, modelindexer.Stats{
+				Added: N, Active: N, AvailableBulkRequests: 0, ConcurrentBulkRequests: 1,
+			}, stats)
+		}
+	}
 
 	close(unblockRequests)
 	err = indexer.Close(context.Background())
 	require.NoError(t, err)
-	stats = indexer.Stats()
+	stats := indexer.Stats()
 	stats.BytesTotal = 0 // Asserted elsewhere.
+	time.Sleep(time.Millisecond)
 	assert.Equal(t, modelindexer.Stats{
 		Added:                 N,
 		BulkRequests:          N,
 		Indexed:               N,
-		AvailableBulkRequests: 10,
+		AvailableBulkRequests: 30,
 	}, stats)
 }
 
@@ -221,7 +246,7 @@ func TestModelIndexerCompressionLevel(t *testing.T) {
 		Failed:                0,
 		Indexed:               1,
 		TooManyRequests:       0,
-		AvailableBulkRequests: 10,
+		AvailableBulkRequests: 30,
 		BytesTotal:            bytesTotal,
 	}, stats)
 }
@@ -330,7 +355,7 @@ func TestModelIndexerServerError(t *testing.T) {
 		Active:                0,
 		BulkRequests:          1,
 		Failed:                1,
-		AvailableBulkRequests: 10,
+		AvailableBulkRequests: 30,
 		BytesTotal:            bytesTotal,
 	}, stats)
 }
@@ -365,7 +390,7 @@ func TestModelIndexerServerErrorTooManyRequests(t *testing.T) {
 		BulkRequests:          1,
 		Failed:                1,
 		TooManyRequests:       1,
-		AvailableBulkRequests: 10,
+		AvailableBulkRequests: 30,
 		BytesTotal:            bytesTotal,
 	}, stats)
 }

@@ -68,28 +68,27 @@ var ErrClosed = errors.New("model indexer closed")
 // Up to `config.MaxRequests` bulk requests may be flushing/active concurrently, to allow the
 // server to make progress encoding while Elasticsearch is busy servicing flushed bulk requests.
 type Indexer struct {
-	bulkRequests          int64
-	eventsAdded           int64
-	eventsActive          int64
-	eventsFailed          int64
-	eventsIndexed         int64
-	tooManyRequests       int64
-	bytesTotal            int64
-	availableBulkRequests int64
+	bulkRequests           int64
+	eventsAdded            int64
+	eventsActive           int64
+	eventsFailed           int64
+	eventsIndexed          int64
+	tooManyRequests        int64
+	bytesTotal             int64
+	availableBulkRequests  int64
+	concurrentBulkRequests int64
 
 	config    Config
 	logger    *logp.Logger
 	available chan *bulkIndexer
+	items     chan elasticsearch.BulkIndexerItem
 	g         errgroup.Group
 
-	mu           sync.RWMutex
-	closing      bool
-	closed       chan struct{}
-	activeMu     sync.Mutex
-	activeCond   *sync.Cond
-	active       *bulkIndexer
-	timer        *time.Timer
-	timerStopped chan struct{}
+	bulkIndexerFunc func() *bulkIndexer
+
+	mu      sync.RWMutex
+	closing bool
+	closed  chan struct{}
 }
 
 // Config holds configuration for Indexer.
@@ -103,12 +102,12 @@ type Config struct {
 	// MaxRequests holds the maximum number of bulk index requests to execute concurrently.
 	// The maximum memory usage of Indexer is thus approximately MaxRequests*FlushBytes.
 	//
-	// If MaxRequests is less than or equal to zero, the default of 10 will be used.
+	// If MaxRequests is less than or equal to zero, the default of 30 will be used.
 	MaxRequests int
 
 	// FlushBytes holds the flush threshold in bytes.
 	//
-	// If FlushBytes is zero, the default of 5MB will be used.
+	// If FlushBytes is zero, the default of 1MB will be used.
 	FlushBytes int
 
 	// FlushInterval holds the flush threshold as a duration.
@@ -133,7 +132,7 @@ func New(client elasticsearch.Client, cfg Config) (*Indexer, error) {
 		)
 	}
 	if cfg.MaxRequests <= 0 {
-		cfg.MaxRequests = 40
+		cfg.MaxRequests = 30
 	}
 	if cfg.FlushBytes <= 0 {
 		cfg.FlushBytes = 1 * 1024 * 1024
@@ -142,8 +141,11 @@ func New(client elasticsearch.Client, cfg Config) (*Indexer, error) {
 		cfg.FlushInterval = 30 * time.Second
 	}
 	available := make(chan *bulkIndexer, cfg.MaxRequests)
+	bulkIndexerFunc := func() *bulkIndexer {
+		return newBulkIndexer(client, cfg.CompressionLevel)
+	}
 	for i := 0; i < cfg.MaxRequests; i++ {
-		available <- newBulkIndexer(client, cfg.CompressionLevel)
+		available <- bulkIndexerFunc()
 	}
 	indexer := &Indexer{
 		availableBulkRequests: int64(len(available)),
@@ -151,9 +153,11 @@ func New(client elasticsearch.Client, cfg Config) (*Indexer, error) {
 		logger:                logger,
 		available:             available,
 		closed:                make(chan struct{}),
-		timerStopped:          make(chan struct{}),
+		// NOTE(marclop) This channel size is arbitrary
+		items:           make(chan elasticsearch.BulkIndexerItem, 200),
+		bulkIndexerFunc: bulkIndexerFunc,
 	}
-	indexer.activeCond = sync.NewCond(&indexer.activeMu)
+	indexer.startProcessor(0)
 	return indexer, nil
 }
 
@@ -179,12 +183,7 @@ func (i *Indexer) Close(ctx context.Context) error {
 			case <-ctx.Done():
 			}
 		}()
-
-		i.activeMu.Lock()
-		if i.active != nil && i.timer.Stop() {
-			i.timerStopped <- struct{}{}
-		}
-		i.activeMu.Unlock()
+		close(i.items)
 	}
 	return i.g.Wait()
 }
@@ -192,14 +191,15 @@ func (i *Indexer) Close(ctx context.Context) error {
 // Stats returns the bulk indexing stats.
 func (i *Indexer) Stats() Stats {
 	return Stats{
-		Added:                 atomic.LoadInt64(&i.eventsAdded),
-		Active:                atomic.LoadInt64(&i.eventsActive),
-		BulkRequests:          atomic.LoadInt64(&i.bulkRequests),
-		Failed:                atomic.LoadInt64(&i.eventsFailed),
-		Indexed:               atomic.LoadInt64(&i.eventsIndexed),
-		TooManyRequests:       atomic.LoadInt64(&i.tooManyRequests),
-		BytesTotal:            atomic.LoadInt64(&i.bytesTotal),
-		AvailableBulkRequests: atomic.LoadInt64(&i.availableBulkRequests),
+		Added:                  atomic.LoadInt64(&i.eventsAdded),
+		Active:                 atomic.LoadInt64(&i.eventsActive),
+		BulkRequests:           atomic.LoadInt64(&i.bulkRequests),
+		Failed:                 atomic.LoadInt64(&i.eventsFailed),
+		Indexed:                atomic.LoadInt64(&i.eventsIndexed),
+		TooManyRequests:        atomic.LoadInt64(&i.tooManyRequests),
+		BytesTotal:             atomic.LoadInt64(&i.bytesTotal),
+		AvailableBulkRequests:  atomic.LoadInt64(&i.availableBulkRequests),
+		ConcurrentBulkRequests: atomic.LoadInt64(&i.concurrentBulkRequests),
 	}
 }
 
@@ -236,52 +236,22 @@ func (i *Indexer) processEvent(ctx context.Context, event *model.APMEvent) error
 	r.indexBuilder.WriteString(event.DataStream.Namespace)
 	index := r.indexBuilder.String()
 
-	i.activeMu.Lock()
-	defer i.activeMu.Unlock()
-	for i.active != nil && i.active.Len() >= i.config.FlushBytes {
-		// The active bulk indexer is full: wait for it to be
-		// switched out by the background flushActive goroutine.
-		i.activeCond.Wait()
-	}
-	if i.active == nil {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case i.active = <-i.available:
-			atomic.AddInt64(&i.availableBulkRequests, -1)
-		}
-		if i.timer == nil {
-			i.timer = time.NewTimer(i.config.FlushInterval)
-		} else {
-			i.timer.Reset(i.config.FlushInterval)
-		}
-		i.g.Go(func() error {
-			// The timer may be stopped by i.Close or when
-			// i.config.FlushBytes is exceeded, in which case
-			// i.timerStopped will be signalled.
-			select {
-			case <-i.timerStopped:
-			case <-i.timer.C:
-			}
-			return i.flushActive(context.Background())
-		})
-	}
-
-	if err := i.active.Add(elasticsearch.BulkIndexerItem{
+	item := elasticsearch.BulkIndexerItem{
 		Index:  index,
 		Action: "create",
 		Body:   r,
-	}); err != nil {
-		return err
 	}
+	select {
+	// Send the BulkIndexerItem to the internal items channel. This indirection
+	// speeds up the ProcessBatch calls, in particular when compression is
+	// enabled (by default gzip compression is enabled with a level of 5).
+	case i.items <- item:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
 	atomic.AddInt64(&i.eventsAdded, 1)
 	atomic.AddInt64(&i.eventsActive, 1)
-
-	if i.active.Len() >= i.config.FlushBytes {
-		if i.timer.Stop() {
-			i.timerStopped <- struct{}{}
-		}
-	}
 	return nil
 }
 
@@ -332,7 +302,7 @@ func encodeMap(v map[string]interface{}, out *fastjson.Writer) error {
 	return nil
 }
 
-func (i *Indexer) flushActive(ctx context.Context) error {
+func (i *Indexer) flushActive(ctx context.Context, bulkIndexer *bulkIndexer) error {
 	// Create a child context which is cancelled when the context passed to i.Close is cancelled.
 	flushed := make(chan struct{})
 	defer close(flushed)
@@ -345,11 +315,6 @@ func (i *Indexer) flushActive(ctx context.Context) error {
 		}
 	}()
 
-	i.activeMu.Lock()
-	bulkIndexer := i.active
-	i.active = nil
-	i.activeCond.Broadcast()
-	i.activeMu.Unlock()
 	err := i.flush(ctx, bulkIndexer)
 	bulkIndexer.Reset()
 	i.available <- bulkIndexer
@@ -418,6 +383,8 @@ func (i *Indexer) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 			}
 		}
 	}
+	// NOTE(marclop): Uncomment for faked indexer metrics.
+	// eventsIndexed = int64(bulkIndexer.itemsAdded)
 	if eventsFailed > 0 {
 		atomic.AddInt64(&i.eventsFailed, eventsFailed)
 	}
@@ -432,6 +399,107 @@ func (i *Indexer) flush(ctx context.Context, bulkIndexer *bulkIndexer) error {
 		eventsIndexed, eventsFailed, tooManyRequests,
 	)
 	return nil
+}
+
+func (i *Indexer) startProcessor(identifier int64) {
+	i.g.Go(func() error {
+		// Only allow a single indexer to be scaled at a time.
+		if !atomic.CompareAndSwapInt64(&i.concurrentBulkRequests, identifier, identifier+1) {
+			return nil
+		}
+		defer func() {
+			atomic.AddInt64(&i.concurrentBulkRequests, -1)
+		}()
+		var active *bulkIndexer
+		var timer *time.Timer
+		var activeMu sync.Mutex
+		var fullFlushes uint64
+		flush := make(chan *bulkIndexer)
+		for item := range i.items {
+			activeMu.Lock()
+			if active == nil {
+				active = <-i.available
+				atomic.AddInt64(&i.availableBulkRequests, -1)
+				if timer == nil {
+					timer = time.AfterFunc(i.config.FlushInterval, func() {
+						activeMu.Lock()
+						flush <- active
+						active = nil
+						activeMu.Unlock()
+						atomic.StoreUint64(&fullFlushes, 0)
+					})
+				} else {
+					timer.Reset(i.config.FlushInterval)
+				}
+				i.g.Go(func() error {
+					var bulk *bulkIndexer
+					select {
+					case bulk = <-flush:
+					}
+					return i.flushActive(context.Background(), bulk)
+				})
+			}
+			if err := active.Add(item); err != nil {
+				i.logger.Errorf("failed adding event to bulk indexer: %v", err)
+			}
+			// atCapacity
+			var atCapacity bool
+			if active.Len() >= i.config.FlushBytes {
+				if timer.Stop() {
+					flush <- active
+					active = nil
+					atCapacity = true
+				}
+			}
+			if atCapacity {
+				// Check to see how many concurrent indexers exist.
+				// Limit to 20 active indexers.
+				activeIndexers := atomic.LoadInt64(&i.concurrentBulkRequests)
+				// When the last 100 flushes have been full, request another
+				// active indexer.
+				if atomic.AddUint64(&fullFlushes, 1) > 100 && activeIndexers < 20 {
+					i.startProcessor(activeIndexers)
+					atomic.StoreUint64(&fullFlushes, 0)
+					// TODO(marclop) ideally, we'd resize the available channel
+					// and add more spare bulk indexers per active indexer.
+					// // New channel with the previous channel capacity + the
+					// // number of max requests. This way each active indexer,
+					// // will always have the same number of available bulk
+					// // indexers.
+					// maxRequests := cap(i.available) + i.config.MaxRequests
+					// available := make(chan *bulkIndexer, maxRequests)
+					// // Hold the lock before swapping the old and new channels
+					// // to prevent races. readers of i.available hold the read
+					// // lock. NOTE(marclop) this may well be a separate rwlock
+					// // in a production ready implementation, to avoid halting
+					// // the processing pipeline with this operation.
+					// i.mu.Lock()
+					// old := i.available
+					// i.available = available
+					// i.mu.Unlock()
+					// // Close the old channel and send the bulk indexers fist,
+					// // so we reuse already initialized buffers.
+					// close(old)
+					// for bi := range old {
+					// 	i.available <- bi
+					// }
+					// // Create N more bulk indexers to fill the remainder of
+					// // i.available.
+					// for n := 0; n < i.config.MaxRequests; n++ {
+					// 	i.available <- i.bulkIndexerFunc()
+					// }
+				}
+			}
+			activeMu.Unlock()
+		}
+		activeMu.Lock()
+		if active != nil && timer.Stop() {
+			flush <- active
+			active = nil
+		}
+		activeMu.Unlock()
+		return nil
+	})
 }
 
 var pool sync.Pool
@@ -495,7 +563,11 @@ type Stats struct {
 	// which counts bytes at the transport level.
 	BytesTotal int64
 
-	// AvailableBulkIndexers represents the number of bulk indexers
+	// AvailableBulkRequests represents the number of bulk indexers
 	// available for making bulk index requests.
 	AvailableBulkRequests int64
+
+	// ConcurrentBulkRequests represents the number of bulk indexers
+	// that are being used concurrently.
+	ConcurrentBulkRequests int64
 }

@@ -1,0 +1,17 @@
+name                               old time/op    new time/op    delta
+ModelIndexer/NoCompression-8         1.11µs ± 1%    1.19µs ± 2%   +7.22%  (p=0.008 n=5+5)
+ModelIndexer/BestSpeed-8             2.03µs ± 3%    1.93µs ± 1%   -4.59%  (p=0.008 n=5+5)
+ModelIndexer/DefaultCompression-8    4.10µs ± 2%    2.39µs ± 3%  -41.80%  (p=0.008 n=5+5)
+ModelIndexer/BestCompression-8       6.95µs ± 1%    4.11µs ± 1%  -40.94%  (p=0.008 n=5+5)
+
+name                               old alloc/op   new alloc/op   delta
+ModelIndexer/NoCompression-8         2.07kB ± 0%    2.09kB ± 0%   +0.71%  (p=0.016 n=4+5)
+ModelIndexer/BestSpeed-8             2.57kB ± 0%    2.57kB ± 0%   -0.06%  (p=0.032 n=5+5)
+ModelIndexer/DefaultCompression-8    2.55kB ± 0%    2.53kB ± 0%   -0.42%  (p=0.008 n=5+5)
+ModelIndexer/BestCompression-8       2.58kB ± 0%    2.58kB ± 0%     ~     (p=0.698 n=5+5)
+
+name                               old allocs/op  new allocs/op  delta
+ModelIndexer/NoCompression-8           20.0 ± 0%      20.0 ± 0%     ~     (all equal)
+ModelIndexer/BestSpeed-8               24.0 ± 0%      24.0 ± 0%     ~     (all equal)
+ModelIndexer/DefaultCompression-8      24.0 ± 0%      24.0 ± 0%     ~     (all equal)
+ModelIndexer/BestCompression-8         24.0 ± 0%      24.0 ± 0%     ~     (all equal)
