@@ -321,7 +321,7 @@ The benchmarks have been run using `../bench.sh`.
 
 The image tags which have been used to test the APM Server:
 
-The comment nomenclature is <semaphore>, <flush size>, <# indexers>
+The comment nomenclature is `<semaphore>, <flush size>, <# indexers>`
 
 ```
 docker_image_tag_override = {
