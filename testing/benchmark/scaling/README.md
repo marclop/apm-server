@@ -25,11 +25,11 @@ Elasticsearch is undersized or correctly tuned can be tricky at times and has no
 our experiments so far.
 
 Since version `8.0.0`, APM Server uses a custom Elasticsearch output instead of the libbeat publisher that
-is used up to that version. The most important change in this version is that incoming requests will be processed
+is used up to that version. The most important change in that version is that incoming requests will be processed
 and added to a local bulk indexer cache (in its wire-data form) synchronously, instead of using an internal
-Go queue to communicate with the libbeat publisher. Additionally, bulk requests will be filled up to 5MB in
-size (default) or flushed ever 1 second, whichever is first. This has the benefit of creating fuller Elasticsearch
-bulk requests, resulting in fewer sparse bulk requests (i.e. a lot of requests, with few items).
+Go queue to communicate with the libbeat publisher. Bulk requests will be cached up to 5MB in size (default) or
+flushed after 1 second, whichever is first. This has the benefit of creating fuller Elasticsearch bulk requests,
+resulting in fewer sparse bulk requests (i.e. a lot of requests, with few items).
 
 ```mermaid
 flowchart LR;
@@ -52,8 +52,8 @@ flowchart LR;
     Flush-->|done|Available;
 ```
 
-Prior to `8.0.0`, the APM Server returned _503: queue is full_ response if requests couldn't be added to the
-libbeat publisher within 1 second, which unintendedly provided a beneficial resource usage limit. From `8.1.2`
+Prior to `8.0.0`, the APM Server returned _503: queue is full_ response if Agent intake requests couldn't be added
+to the libbeat publisher within 1 second, which unintendedly provided a beneficial resource usage limit. From `8.1.2`
 onwards, we added an internal semaphore with a size of `200`, to prevent the APM Server from running out of memory
 when the output rate is lower than the request input rate, in other words, if APM Server can't index events to
 Elasticsearch faster or at an equal rate it is receiving them, it mustn't run out of memory. The `200` size is based
@@ -63,9 +63,9 @@ the minimum size in cloud (1g) to not run out of memory when it is overwhelmed.
 ## Benchmarking methodology
 
 To assess the performance of APM Server, we need to send events to the APM Server as fast as we can
-in order to determine what the maximal throughput can be. The chosen tool is `apmbench` for load generation
-using a set number of _simulated_ apm agents. The number of agents that we've chosen to use is between 512
-and 1024.
+in order to determine what the maximal throughput can be. The chosen tool is
+[`apmbench`](../../../TESTING.md#macro-benchmarking) for load generation using a set number of _simulated_
+apm agents. The number of agents that we've chosen to use is between 512 and 1024 for the 8 and 15GB sizes.
 
 For the sake of scaling, and data gathering, we have been benchmarking using different Elasticsearch shard
 settings for the APM Server data streams. The maximum number of shards that we have tested with is 24 shards
@@ -75,10 +75,10 @@ We also collected data on how APM Server and Elasticsearch behaved with differen
 benchmarked maximum request sizes were 5, 3, 2, and 1 megabyte in size.
 
 As benchmarking progressed, we forced APM Server to write to a no-op Elasticsearch (discarding bulk requests
-into the void, rather than sending them to Elasticsearch), and there was significant contention on the mutex
-of the custom Elasticsearch output. This led to more experiments using multiple active indexers (which fill
-a single bulk indexer until full or timeout elapses before flushing in the background), rather than a single
-active indexer. See the diagram below for an aproximation of the design used:
+into the void, rather than sending them to Elasticsearch), due to significant contention on the modelindexer
+mutex in the custom Elasticsearch output. This led to more experiments using multiple **active indexers** (which
+fill a **single bulk indexer** until full or timeout elapses before flushing in the background), rather than a
+single active indexer. See the diagram below for an aproximation of the design used:
 
 ```mermaid
 flowchart LR;
@@ -120,28 +120,27 @@ flowchart LR;
 
 After the initial benchmarks with APM Server `8.4.0`, it was clear that the APM Server didn't perform any
 better when granted more than 8gb of RAM. The maximal throughput achieved was ~26500 events per second and
-it didn't do any better with more CPU or RAM. The maximum CPU utilization hovered around 50%, so it was clear
-that we were experiencing a bottleneck somewhere in the ingestion pipeline.
+it didn't do any better with more CPU or RAM. The maximum CPU utilization hovered around 50% (only 30% for the
+OTLP benchmark), so it was clear that we were experiencing a bottleneck somewhere in the ingestion pipeline.
 
 ![apm-cpu-utilization](./single-active-indexer/8g/flushbytes/5mb-default/metric-screenshots/apm-cpu-detailed.png)
 
 We had two main hypothesis. The first one that Elasticsearch wasn't indexing the documents fast enough and the
-one that that the semaphore [introduced in `8.1.2`](https://github.com/elastic/apm-server/pull/7809) was limiting
-the throughput.
+other one that the semaphore [introduced in `8.1.2`](https://github.com/elastic/apm-server/pull/7809) was limiting
+throughput.
 
 Additionally, looking at the Elasticsearch CPU usage across hot nodes it seemed clear that the Elasticsearch wasn't
 being pushed to its limit, and we needed to also improve that.
 
 ![es-cpu-usage](./single-active-indexer/8g/flushbytes/5mb-default/metric-screenshots/es-contriner-cpu-detailed.png)
 
-#### 1A: Elasticsearch shard tuning, concurrent bulk indexers
+#### 1a: Elasticsearch shard tuning, concurrent bulk indexers
 
-After increasing the benchmark Elasticsearch cluster from `4 x 58gb hot_content` nodes to `6`, and benchmarked the
-server with different shard settings: `1`, `5`, `10`, `15`, `20`, `24`. Since our initial hypothesis was that the
-semaphore may be limiting throughput, we decided to test only using the OTLP benchmark, since OTLP isn't limited by
-it.
+After increasing the benchmark Elasticsearch cluster from `4 x 58gb hot_content` nodes to `6`, we benchmarked the
+server with different shard settings: `1`, `5`, `10`, `15`, `20`, `24`. Our initial hypothesis was that the semaphore
+may be limiting throughput, we decided to test only using the OTLP benchmark, since OTLP isn't limited by it.
 
-Surprisingly, throuhgput didn/t skyrocket and since the mean available indexers was pretty low (0.9), concluded that
+Surprisingly, throuhgput didn't skyrocket, and since the mean available indexers was pretty low (0.9), concluded that
 10 indexers may not be enough and that long flushes may be slowing processing down in the APM Server. It seemed
 plausible given that Elasticsearch bulk requests took up to 25 seconds (99 percentile). The first module of the
 response time distribution chart represents the benchmark with 10 available indexers, which is the default.
@@ -174,21 +173,21 @@ name            old events/sec               new events/sec               delta
 OTLPTraces-512                   37.8k ± 4%                   46.1k ± 1%   +22.09%  (p=0.100 n=3+3)
 ```
 
-However, the response time was still extremely high (see the rightmost module in the distribution, going up to 30 seconds!).
-It may be that the buffered size (FlushBytes) is too big and the bulk requests that are being sent to Elasticsearch are too
-big as well, resulting in increased processing time.
+However, the response time was still extremely high (see the rightmost module in the distribution, going up and above 30
+seconds!). It may be that the buffered size (FlushBytes) is too high and bulk requests sent to Elasticsearch are too big
+as well, resulting in increased processing time.
 
-At this point, the CPU usage still remained around 30-45%.
+At this point, the CPU usage for the APM Server remained around 30-45%.
 
-#### 1B: FlushBytes is too high
+#### 1b: FlushBytes is too high
 
-Next, multiple APM Server builds were created and benchmarked, 3, 2 and 1 megabytes was tested as the FlushBytes setting,
-with 10, 15 and 20 indexers. Last, 40 available indexers was also tested for the smallest 1mb FlushBytes setting.
+Next, multiple APM Server builds were created and benchmarked, `3`, `2` and `1` megabytes was tested as the FlushBytes
+setting, with 10, 15 and 20 indexers. Last, 40 available indexers was also tested for the smallest 1mb FlushBytes setting.
 
-The detailed results are present in the branch, but in summary, 1MB flushes with 20 available indexers resulted in the
-better throughpuyt (+6.5%), and also lowered response times as it would be expected with smaller bulk request sizes.
-Increasing the number of available indexers to 40 resulted in 12.5% more throughput in total. The overall indexer
-utilization was lower for the 40 available indexers for the OTLP bechmark.
+The detailed results are present in the branch, but in summary, `1MB` flushes with `20` available indexers resulted in
+better throughput (`+6.5%`), and lower response times as it would be expected with smaller bulk request sizes.
+Increasing the number of available indexers to `40` resulted in `12.5%` more throughput but the overall bulk indexer
+utilization was lower for the `40` available indexers for the OTLP bechmark.
 
 ```console
 # 5MB flushes with 20 available indexers vs 1MB flushes with 20 available indexers
@@ -205,7 +204,7 @@ OTLPTraces-512                    1.52 ± 7%                    7.36 ±15%  +383
 ```
 
 CPU usage was higher, 30 to ~55%, yet we still weren't maximizing the CPU resources in the 8g instance. So we had another
-area that was causing a significant bottleneck.
+area that was causing a significant bottleneck. We started looking at the hardcoded 200 sized semaphore next.
 
 ![apm-cpu-resource-flushbytes](./single-active-indexer/8g/flushbytes/1mb/20/metric-screenshots/apm-cpu-detailed.png)
 
@@ -217,8 +216,8 @@ out of memory when the APM Server is overwhelmed. The 200 size means that we can
 requests. When the semaphore was added, its impact was benchmarked and concluded that it didn't affect throughput,
 yet we could have been wrong.
 
-We increased the semaphore and benchmarking the APM Server, we got discouraging results, the throughput didn't
-significantly increase, although there is a slight improvement, not the kind of numbers we were expecting.
+We increased the semaphore and after benchmarking the APM Server, we got discouraging results, the throughput
+didn't significantly increase, although there is a slight improvement, not the kind of numbers we were expecting.
 
 ```console
 name            old events/sec               new events/sec               delta
@@ -237,31 +236,37 @@ OTLPTraces-512                   50.1k ± 6%                   65.1k ± 0%    +2
 [Geo mean]                       35.5k                        41.5k         +16.83%
 ```
 
-It seems that the current design may have been maxed out at 26500 events, to see what is happening in the APM Server,
-a goroutine profile was taken to identify if there was a bottleneck that was causing goroutines to be stuck.
+It seems that the current design's limit may have been reached at 26500 events, to see what is happening inside the
+APM Server, a goroutine profile was taken to identify possible bottlenecks that were causing goroutines to be stuck.
 
-The goroutine profile that we took from the APM Server while running `BenchmarkAgentAll` seems to indicate that there
-significant contention on the ModelIndexer's (APM Servers's output) `activeMu` mutex. See the [Background](#background)
-section for details on the ModelIndexer's current design and rationale. The [full svg trace](./single-active-indexer/benchmarkAgent-goroutine-pprof.svg).
+The goroutine profile that we took from the APM Server while running `BenchmarkAgentAll` seemed to indicate significant
+contention on the ModelIndexer's (APM Servers's output) `activeMu` mutex. See the [Background](#background) section for
+details on the ModelIndexer's current design and rationale.
 
 ![mi-lock-parked-goroutines](./single-active-indexer/parked-goroutines.png)
 
+You can also see [full svg trace](./single-active-indexer/benchmarkAgent-goroutine-pprof.svg).
+
 #### 3: ModelIndexer's is the bottleneck
 
-After some investigation, the modelindexer compressed the received events by default when they are stored in the bulk
-indexer cache. This is done with the `activeMu` lock held and is causing the entire processing pipeline to stop until
+After looking at the modelindexer's code, we identified an area that could be causing the mutex to be held for longer than
+necessary.
+
+As the modelindexer processes the batches it receives, it compresses each event by default before they are stored in the
+bulk indexer cache. This is done with the `activeMu` lock held and caused the entire processing pipeline to stop until
 a [single event is compressed](https://github.com/elastic/apm-server/blob/57d94db8d8cc8a56003018921814a45b40fada46/internal/model/modelindexer/indexer.go#L270-L274).
-If we can defer the compression for later and even better remove the `activeMu` lock so we don't have contention there,
-the processing will progress much faster.
+If we can defer the compression for later and even better remove the `activeMu` lock to eliminate its contention, the
+processing can progress much faster.
 
 Since the modelindexer `activeMu` lock seems to be the offending component causing a significant bottleneck and reduced
 throughput, we benchmarked a modified version of APM Server where the modelindexer `activeMu` lock is eliminated and a
 new channel inside the modelindexer is introduced to decouple the cache writing from the HTTP request lifecycle. Also,
 since we have a queue where the BulkRequestItems are sent before they are compressed, we can scale the compression and
-flushing of the bulk indexers to increase the number of "active" consumers from the queue.
+flushing of the bulk indexers to increase the number of "active" consumers from the queue. See [](#benchmarking-methodology)
+for more details on the design.
 
-Preliminary results look great, yet it seems that we may be maxing the Elasticsearch cluster capacity, CPU usage and
-queue sizes pretty high.
+Preliminary results look great, yet it seems that we may be reaching the Elasticsearch cluster capacity, CPU usage and
+queue sizes are pretty high. The APM Server CPU utilization was better, but still ~65%.
 
 ![es-instances-maxed-cpu](./multiple-active-indexers/8g/80/metrics-screenshots/es-metrics-2.png)
 ![apm-modified-mi-nolock-cpu](./multiple-active-indexers/8g/80/metrics-screenshots/apm-resources-overview.png)
@@ -273,10 +278,8 @@ OTLPTraces-512                   50.1k ± 6%                   57.3k ± 5%   +14
 [Geo mean]                       35.5k                        42.3k        +18.99%
 ```
 
-The APM Server CPU utilization is better, but still ~65%, in order to test that the current design can take advantage
-of all the machine resources, the bulk indexer is modified to flush to the void, rather than to Elasticsearch.
-
-Finally, as expected, the throughput skyrocketed. And so did the APM Server resource usage:
+To test that the current design can take advantage of all the machine resources, the bulk indexer was modified to flush to
+the void, rather than to Elasticsearch, and finally, the throughput skyrocketed. And so did the APM Server resource usage:
 
 ```console
 name            old events/sec               new events/sec               delta
@@ -288,18 +291,17 @@ OTLPTraces-512                   57.3k ± 5%                  281.0k ± 0%   +39
 ![apm-modified-mi-nolock-cpu-max-8g](./multiple-active-indexers/flush-discard/8g/metrics-screenshots/apm-resources-overview.png)
 
 The semaphore was left untouched, so this performance was achieved with the 200 sized semaphore in place. It
-kept the memory usage under control, but seemed to not reduce the throughput or limit it.
+kept the memory usage under control, but appeared to not reduce the throughput or limit it.
 
 ## Conclusion
 
 APM Server is not currently suited to be scaled vertically past 8 Gigabytes of memory. The main reason seems to be
-that the modelindexer design can't achieve a throughput past ~26500 events per second, for the reasons outlined in
-this document.
+that the modelindexer design can't achieve a throughput past ~26500 events per second, for the reasons we just examined.
 
 As follow ups from this research, we should come up with a design that allows high throughput and to communicate back
 payload problems to the producing agents. Currently, we would still respond with an error if a bulk indexer failed to
-compress an agent's event, yet it is highly unlikely that the agent or customer is at fault for that. A better strategy
-would be to log those errors and decouple the time intensive operations from agents requests, since not doing so slows
+compress an agent's event, yet it is highly unlikely that the agent or customer is at fault for it. A better strategy
+would be to log those errors and decouple the time intensive operations from agent requests, since not doing so slows
 down the entire pipeline.
 A PoC with autoscaling of active indexers can be found in: <https://github.com/marclop/apm-server/tree/vertical-scaling>.
 
