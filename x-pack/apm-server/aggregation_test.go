@@ -6,6 +6,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"math/rand"
 	"testing"
 	"time"
 
@@ -58,6 +60,14 @@ func Test_newAggregationProcessors(t *testing.T) {
 }
 
 func newEvent(tx, span bool) *modelpb.APMEvent {
+	sliceCount := 10000
+	strSlice := make([]string, sliceCount)
+	floatSlice := make([]float64, sliceCount)
+	for i := 0; i < sliceCount; i++ {
+		v := rand.Float64()
+		strSlice = append(strSlice, fmt.Sprint(v))
+		floatSlice = append(floatSlice, float64(v))
+	}
 	event := modelpb.APMEvent{
 		Timestamp: uint64(time.Now().UnixNano()),
 		Cloud:     &modelpb.Cloud{Provider: "aws", Region: "us-west-2"},
@@ -91,8 +101,12 @@ func newEvent(tx, span bool) *modelpb.APMEvent {
 			"ab_otel_java_extension_duration":      {Value: 0, Global: true},
 			"thread_id":                            {Value: 1178, Global: true},
 			"otl_collector_ingest_timestamp_razor": {Value: 1722280211, Global: true},
+			"slice_example":                        {Values: []float64{1, 2, 3, 4, 5, 6, 7}, Global: true},
+			"big_slice":                            {Values: floatSlice, Global: true},
 		},
 		Labels: map[string]*modelpb.LabelValue{
+			"big_slice":                             {Values: strSlice, Global: true},
+			"slice_example":                         {Values: []string{"1", "2", "3", "4", "5", "6", "7"}, Global: true},
 			"net_transport":                         {Value: "ip_tcp", Global: true},
 			"aws_ecs_startedat":                     {Value: "2024-07-21T10:58:08.975968728Z", Global: true},
 			"service_ecs_pipeline_version":          {Value: "1.3.606", Global: true},
